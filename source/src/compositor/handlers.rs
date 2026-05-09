@@ -50,6 +50,7 @@ use {
                 CompositorClientState,
                 CompositorHandler,
                 CompositorState,
+                with_states,
             },
             output::OutputHandler,
             selection::{
@@ -74,6 +75,7 @@ use {
                     ToplevelSurface,
                     XdgShellHandler,
                     XdgShellState,
+                    XdgToplevelSurfaceData,
                 },
             },
             shm::{
@@ -134,9 +136,26 @@ impl XdgShellHandler for State {
         let id = next_window_id();
         let window = Window::new_wayland_window(surface.clone());
         let desktop = self.current_desktop;
-        let area = self.window_area();
+        // Try to read title/app_id already sent by the client before the
+        // initial commit, so window rules are applied correctly from the start.
+        let title = with_states(surface.wl_surface(), |states| {
+            states
+                .data_map
+                .get::<XdgToplevelSurfaceData>()
+                .and_then(|d| d.lock().ok())
+                .and_then(|g| g.title.clone())
+        });
+        let app_id = with_states(surface.wl_surface(), |states| {
+            states
+                .data_map
+                .get::<XdgToplevelSurfaceData>()
+                .and_then(|d| d.lock().ok())
+                .and_then(|g| g.app_id.clone())
+        });
+        let params = self.effective_window_params(title.as_deref(), app_id.as_deref());
+        let content_area = self.window_content_area_for(&params);
         surface.with_pending_state(|state| {
-            state.size = Some(area.size);
+            state.size = Some(content_area.size);
             state.states.set(xdg_toplevel::State::Maximized);
         });
         surface.send_configure();
@@ -156,11 +175,10 @@ impl XdgShellHandler for State {
         self.windows.push(managed);
         if is_first_visible {
             self.current_window_id = Some(id);
-            let area = self.window_area();
             if let Some(mw) = self.windows.iter().find(|w| w.id == id) {
                 if let Some(t) = mw.window.toplevel() {
                     t.with_pending_state(|state| {
-                        state.size = Some(area.size);
+                        state.size = Some(content_area.size);
                         state.states.set(xdg_toplevel::State::Activated);
                     });
                     t.send_pending_configure();

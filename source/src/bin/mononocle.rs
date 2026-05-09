@@ -11,6 +11,7 @@ use {
         },
         state::{
             ClientState,
+            ROUNDED_RECT_SHADER,
             State,
         },
     },
@@ -27,7 +28,11 @@ use {
                 Color32F,
                 Frame,
                 Renderer,
-                gles::GlesRenderer,
+                gles::{
+                    GlesRenderer,
+                    UniformName,
+                    UniformType,
+                },
                 utils::draw_render_elements,
             },
             winit::{
@@ -113,17 +118,26 @@ fn run(config: Config) -> Result<(), Box<dyn std::error::Error>> {
     // Start IPC server thread
     spawn_ipc_server(config.socket.clone(), ipc_shared, ipc_cmd_tx);
 
-    // Load background image (in its own scope to release backend borrow)
-    if let Some(bg_path) = config.background.clone() {
+    // Bind renderer once to load background and compile shader
+    {
         let (renderer, _fb) = backend.bind()?;
-        match load_background(renderer, &bg_path) {
-            Ok(buf) => {
-                state.background_buffer = Some(buf);
-                tracing::info!("Background loaded from {}", bg_path.display());
-            },
-            Err(e) => tracing::warn!("Failed to load background {}: {e}", bg_path.display()),
+
+        if let Some(bg_path) = config.background.clone() {
+            match load_background(renderer, &bg_path) {
+                Ok((buf, dims)) => {
+                    state.background_buffer = Some((buf, dims));
+                    tracing::info!("Background loaded from {}", bg_path.display());
+                },
+                Err(e) => tracing::warn!("Failed to load background {}: {e}", bg_path.display()),
+            }
+        }
+
+        match compile_rounded_rect_shader(renderer) {
+            Ok(prog) => state.rounded_rect_shader = Some(prog),
+            Err(e) => tracing::warn!("Failed to compile rounded-rect shader: {e}"),
         }
     }
+
     let mut clients = Vec::new();
     loop {
         let status = winit_loop.dispatch_new_events(|event| match event {
@@ -137,11 +151,16 @@ fn run(config: Config) -> Result<(), Box<dyn std::error::Error>> {
                 };
                 state.output.change_current_state(Some(mode), None, None, None);
                 if let Some(id) = state.current_window_id {
-                    let area = state.window_area();
+                    let (title, app_id) = state.windows.iter()
+                        .find(|w| w.id == id)
+                        .map(|mw| (mw.title(), mw.app_id()))
+                        .unwrap_or((None, None));
+                    let params = state.effective_window_params(title.as_deref(), app_id.as_deref());
+                    let content_area = state.window_content_area_for(&params);
                     if let Some(mw) = state.windows.iter().find(|w| w.id == id) {
                         if let Some(t) = mw.window.toplevel() {
                             t.with_pending_state(|s| {
-                                s.size = Some(area.size);
+                                s.size = Some(content_area.size);
                             });
                             t.send_pending_configure();
                         }
@@ -192,7 +211,10 @@ fn load_background(
     renderer: &mut GlesRenderer,
     path: &std::path::Path,
 ) -> Result<
-    smithay::backend::renderer::element::texture::TextureBuffer<smithay::backend::renderer::gles::GlesTexture>,
+    (
+        smithay::backend::renderer::element::texture::TextureBuffer<smithay::backend::renderer::gles::GlesTexture>,
+        (u32, u32),
+    ),
     Box<dyn std::error::Error>,
 > {
     use {
@@ -214,8 +236,22 @@ fn load_background(
     let (w, h) = rgba.dimensions();
     let data = rgba.into_raw();
     let size = Size::<i32, Buffer>::from((w as i32, h as i32));
-    let buf = TextureBuffer::from_memory(renderer, &data, Fourcc::Abgr8888, size, false, 1, Transform::Normal, None)?;
-    Ok(buf)
+    let buf =
+        TextureBuffer::from_memory(renderer, &data, Fourcc::Abgr8888, size, false, 1, Transform::Normal, None)?;
+    Ok((buf, (w, h)))
+}
+
+fn compile_rounded_rect_shader(
+    renderer: &mut GlesRenderer,
+) -> Result<smithay::backend::renderer::gles::GlesPixelProgram, Box<dyn std::error::Error>> {
+    let prog = renderer.compile_custom_pixel_shader(
+        ROUNDED_RECT_SHADER,
+        &[
+            UniformName::new("u_color", UniformType::_4f),
+            UniformName::new("u_radius", UniformType::_1f),
+        ],
+    )?;
+    Ok(prog)
 }
 
 fn handle_input(state: &mut State, event: InputEvent<WinitInput>) {
