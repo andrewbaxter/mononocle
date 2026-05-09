@@ -1,5 +1,10 @@
-use schemars::JsonSchema;
-use serde::{Deserialize, Serialize};
+use {
+    schemars::JsonSchema,
+    serde::{
+        Deserialize,
+        Serialize,
+    },
+};
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct WindowInfo {
@@ -13,10 +18,18 @@ pub struct WindowInfo {
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case", tag = "type")]
 pub enum WindowEvent {
-    WindowCreated { window: WindowInfo },
-    WindowDeleted { id: u64 },
-    ShownWindowChanged { window_id: Option<u64> },
-    ShownDesktopChanged { desktop: u32 },
+    WindowCreated {
+        window: WindowInfo,
+    },
+    WindowDeleted {
+        id: u64,
+    },
+    ShownWindowChanged {
+        window_id: Option<u64>,
+    },
+    ShownDesktopChanged {
+        desktop: u32,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -29,15 +42,12 @@ pub struct KillWindowArgs {
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct ListWindows;
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
-pub struct Subscribe;
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
-pub struct Poll;
+pub struct Watch;
 
 glove::reqresp!(pub protocol {
-    ListWindows(ListWindows) => Vec<WindowInfo>,
-    ShowDesktop(u32) => (),
-    ShowWindow(u64) => (),
-    KillWindow(KillWindowArgs) => (),
-    Subscribe(Subscribe) => (),
-    Poll(Poll) => Vec<WindowEvent>,
+    ListWindows(ListWindows) => Vec < WindowInfo >,
+    ShowDesktop(u32) =>(),
+    ShowWindow(u64) =>(),
+    KillWindow(KillWindowArgs) =>(),
+    Watch(Watch) => Vec < WindowEvent >,
 });

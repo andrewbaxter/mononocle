@@ -1,6 +1,10 @@
-use std::path::PathBuf;
-
-use serde::{Deserialize, Serialize};
+use {
+    serde::{
+        Deserialize,
+        Serialize,
+    },
+    std::path::PathBuf,
+};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Config {

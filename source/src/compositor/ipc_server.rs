@@ -1,27 +1,36 @@
-use std::{
-    collections::VecDeque,
-    path::PathBuf,
-    sync::{Arc, Mutex},
+use {
+    crate::ipc::{
+        WindowEvent,
+        WindowInfo,
+        protocol,
+    },
+    std::{
+        path::PathBuf,
+        sync::{
+            Arc,
+            Mutex,
+        },
+        time::Duration,
+    },
+    tokio::sync::broadcast,
 };
-
-use crate::ipc::{WindowEvent, WindowInfo, protocol};
 
 /// State shared between the compositor thread and the IPC server thread.
 pub struct SharedIpcState {
     pub windows: Vec<WindowInfo>,
     pub current_window_id: Option<u64>,
     pub current_desktop: u32,
-    /// One queue per subscribed connection.
-    pub event_queues: Vec<VecDeque<WindowEvent>>,
+    pub event_tx: broadcast::Sender<WindowEvent>,
 }
 
 impl SharedIpcState {
     pub fn new() -> Self {
+        let (event_tx, _) = broadcast::channel(1000);
         Self {
             windows: Vec::new(),
             current_window_id: None,
             current_desktop: 0,
-            event_queues: Vec::new(),
+            event_tx,
         }
     }
 }
@@ -39,10 +48,7 @@ pub fn spawn_ipc_server(
     cmd_tx: std::sync::mpsc::Sender<IpcCommand>,
 ) {
     std::thread::spawn(move || {
-        let rt = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .expect("tokio runtime");
+        let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().expect("tokio runtime");
         rt.block_on(run_server(socket_path, shared, cmd_tx));
     });
 }
@@ -57,17 +63,16 @@ async fn run_server(
         Err(e) => {
             eprintln!("IPC server error: {e}");
             return;
-        }
+        },
     };
     tracing::info!("IPC socket at {}", socket_path.display());
-
     loop {
         let conn = match server.accept().await {
             Ok(c) => c,
             Err(e) => {
                 tracing::warn!("IPC accept error: {e}");
                 continue;
-            }
+            },
         };
         let shared = shared.clone();
         let cmd_tx = cmd_tx.clone();
@@ -82,8 +87,8 @@ async fn handle_connection(
     shared: Arc<Mutex<SharedIpcState>>,
     cmd_tx: std::sync::mpsc::Sender<IpcCommand>,
 ) {
-    let mut my_queue_idx: Option<usize> = None;
-
+    // Broadcast receiver, set up on first Watch call.
+    let mut event_rx: Option<broadcast::Receiver<WindowEvent>> = None;
     loop {
         let req = match conn.recv_req().await {
             Ok(Some(r)) => r,
@@ -91,66 +96,76 @@ async fn handle_connection(
             Err(e) => {
                 tracing::debug!("IPC recv error: {e}");
                 break;
-            }
+            },
         };
-
         let resp = match req {
             protocol::ServerReq::ListWindows(respond, _) => {
                 let windows = shared.lock().unwrap().windows.clone();
                 respond(windows)
-            }
-
+            },
             protocol::ServerReq::ShowDesktop(respond, desktop) => {
                 cmd_tx.send(IpcCommand::ShowDesktop(desktop)).ok();
                 respond(())
-            }
-
+            },
             protocol::ServerReq::ShowWindow(respond, id) => {
                 cmd_tx.send(IpcCommand::ShowWindow(id)).ok();
                 respond(())
-            }
-
+            },
             protocol::ServerReq::KillWindow(respond, args) => {
                 cmd_tx.send(IpcCommand::KillWindow(args.id)).ok();
                 respond(())
-            }
-
-            protocol::ServerReq::Subscribe(respond, _) => {
-                if my_queue_idx.is_none() {
-                    let mut s = shared.lock().unwrap();
-                    my_queue_idx = Some(s.event_queues.len());
-                    s.event_queues.push(VecDeque::new());
-                }
-                respond(())
-            }
-
-            protocol::ServerReq::Poll(respond, _) => {
-                let events = if let Some(idx) = my_queue_idx {
-                    let mut s = shared.lock().unwrap();
-                    if let Some(q) = s.event_queues.get_mut(idx) {
-                        q.drain(..).collect::<Vec<_>>()
-                    } else {
-                        vec![]
-                    }
+            },
+            protocol::ServerReq::Watch(respond, _) => {
+                let events = if event_rx.is_none() {
+                    // First call: subscribe and return current state snapshot.
+                    let s = shared.lock().unwrap();
+                    event_rx = Some(s.event_tx.subscribe());
+                    let mut events: Vec<WindowEvent> =
+                        s.windows.iter().map(|w| WindowEvent::WindowCreated { window: w.clone() }).collect();
+                    events.push(WindowEvent::ShownDesktopChanged { desktop: s.current_desktop });
+                    events.push(WindowEvent::ShownWindowChanged { window_id: s.current_window_id });
+                    events
                 } else {
-                    vec![]
+                    // Subsequent calls: drain buffered events, blocking if none yet.
+                    let rx = event_rx.as_mut().unwrap();
+                    let mut events = drain_receiver(rx);
+                    if events.is_empty() {
+                        // Block until at least one event arrives (or timeout).
+                        match tokio::time::timeout(Duration::from_secs(30), rx.recv()).await {
+                            Ok(Ok(e)) => {
+                                events.push(e);
+                                events.extend(drain_receiver(rx));
+                            },
+                            Ok(Err(broadcast::error::RecvError::Lagged(n))) => {
+                                tracing::warn!("Watch receiver lagged by {n} events");
+                                events.extend(drain_receiver(rx));
+                            },
+                            // timeout or closed — return empty, loop will exit on next recv_req
+                            _ => { },
+                        }
+                    }
+                    events
                 };
                 respond(events)
-            }
+            },
         };
-
         if let Err(e) = conn.send_resp(resp).await {
             tracing::debug!("IPC send error: {e}");
             break;
         }
     }
+}
 
-    // Remove this connection's event queue to prevent stale queue growth.
-    // Shift indices of later queues accordingly by removing from the vec.
-    if let Some(idx) = my_queue_idx {
-        let mut s = shared.lock().unwrap();
-        if idx < s.event_queues.len() {
-            s.event_queues.remove(idx);
+fn drain_receiver(rx: &mut broadcast::Receiver<WindowEvent>) -> Vec<WindowEvent> {
+    let mut events = vec![];
+    loop {
+        match rx.try_recv() {
+            Ok(e) => events.push(e),
+            Err(broadcast::error::TryRecvError::Lagged(n)) => {
+                tracing::warn!("Watch receiver lagged by {n} events");
+            },
+            Err(_) => break,
         }
     }
+    events
 }

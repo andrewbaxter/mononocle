@@ -1,7 +1,16 @@
-use std::path::PathBuf;
-
-use aargvark::{Aargvark, vark};
-use mononocle::ipc::{KillWindowArgs, ListWindows, Poll, Subscribe, protocol};
+use {
+    aargvark::{
+        Aargvark,
+        vark,
+    },
+    mononocle::ipc::{
+        KillWindowArgs,
+        ListWindows,
+        Watch,
+        protocol,
+    },
+    std::path::PathBuf,
+};
 
 #[derive(Aargvark)]
 struct Args {
@@ -39,7 +48,6 @@ fn default_socket() -> PathBuf {
 async fn main() {
     let args: Args = vark();
     let socket = args.socket.unwrap_or_else(default_socket);
-
     let result = run(socket, args.command).await;
     if let Err(e) = result {
         eprintln!("Error: {e}");
@@ -56,44 +64,37 @@ async fn run(socket: PathBuf, command: Command) -> Result<(), String> {
                 println!("No windows.");
             } else {
                 for w in windows {
-                    let visible = if w.is_visible { " [visible]" } else { "" };
+                    let visible = if w.is_visible {
+                        " [visible]"
+                    } else {
+                        ""
+                    };
                     let title = w.title.as_deref().unwrap_or("<no title>");
                     let app_id = w.app_id.as_deref().unwrap_or("<no app-id>");
-                    println!(
-                        "id={} desktop={} app_id={} title={}{visible}",
-                        w.id, w.desktop, app_id, title
-                    );
+                    println!("id={} desktop={} app_id={} title={}{visible}", w.id, w.desktop, app_id, title);
                 }
             }
-        }
-
+        },
         Command::Listen => {
             let mut client = protocol::Client::new(&socket).await?;
-            client.send_req(Subscribe).await?;
-            println!("Subscribed. Polling for events...");
             loop {
-                tokio::time::sleep(std::time::Duration::from_millis(200)).await;
-                let events = client.send_req(Poll).await?;
+                let events = client.send_req(Watch).await?;
                 for event in events {
-                    let json = serde_json::to_string(&event)
-                        .unwrap_or_else(|_| "<serialize error>".into());
+                    let json = serde_json::to_string(&event).unwrap_or_else(|_| "<serialize error>".into());
                     println!("{json}");
                 }
             }
-        }
-
+        },
         Command::ShowDesktop(n) => {
             let mut client = protocol::Client::new(&socket).await?;
             client.send_req(n).await?;
             println!("Switched to desktop {n}.");
-        }
-
+        },
         Command::ShowWindow(id) => {
             let mut client = protocol::Client::new(&socket).await?;
             client.send_req(id).await?;
             println!("Showed window {id}.");
-        }
-
+        },
         Command::Kill(args) => {
             let mut client = protocol::Client::new(&socket).await?;
             client.send_req(KillWindowArgs { id: args.id }).await?;
@@ -101,7 +102,7 @@ async fn run(socket: PathBuf, command: Command) -> Result<(), String> {
                 Some(id) => println!("Sent kill to window {id}."),
                 None => println!("Sent kill to focused window."),
             }
-        }
+        },
     }
     Ok(())
 }
