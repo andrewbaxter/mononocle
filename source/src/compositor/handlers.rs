@@ -1,6 +1,6 @@
 use std::os::unix::io::OwnedFd;
 
-use mononocle_ipc::WindowEvent;
+use crate::ipc::WindowEvent;
 use smithay::{
     delegate_compositor, delegate_data_device, delegate_layer_shell, delegate_output,
     delegate_seat, delegate_shm, delegate_xdg_shell,
@@ -27,7 +27,7 @@ use smithay::{
     },
 };
 
-use crate::state::{ClientState, ManagedWindow, State, next_window_id};
+use crate::compositor::state::{ClientState, ManagedWindow, State, next_window_id};
 
 // --- CompositorHandler ---
 

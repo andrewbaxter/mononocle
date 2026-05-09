@@ -3,7 +3,7 @@ use std::{
     time::Instant,
 };
 
-use mononocle_ipc::{WindowEvent, WindowInfo};
+use crate::ipc::{WindowEvent, WindowInfo};
 use smithay::{
     backend::renderer::{
         element::{
@@ -36,8 +36,8 @@ use smithay::{
     },
 };
 
-use crate::config::Config;
-use crate::ipc_server::{IpcCommand, SharedIpcState};
+use crate::compositor::config::Config;
+use crate::compositor::ipc_server::{IpcCommand, SharedIpcState};
 
 render_elements! {
     pub CompElement<=GlesRenderer>;

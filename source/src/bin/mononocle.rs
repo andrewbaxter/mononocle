@@ -1,8 +1,3 @@
-mod config;
-mod handlers;
-mod ipc_server;
-mod state;
-
 use std::{path::PathBuf, sync::Arc};
 
 use aargvark::{Aargvark, vark};
@@ -23,9 +18,9 @@ use smithay::{
 };
 use smithay::reexports::winit::platform::pump_events::PumpStatus;
 
-use config::Config;
-use ipc_server::{SharedIpcState, spawn_ipc_server};
-use state::{ClientState, State};
+use mononocle::compositor::config::Config;
+use mononocle::compositor::ipc_server::{SharedIpcState, spawn_ipc_server};
+use mononocle::compositor::state::{ClientState, State};
 
 #[derive(Aargvark)]
 struct Args {

@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 
 use aargvark::{Aargvark, vark};
-use mononocle_ipc::{KillWindowArgs, ListWindows, Poll, Subscribe, protocol};
+use mononocle::ipc::{KillWindowArgs, ListWindows, Poll, Subscribe, protocol};
 
 #[derive(Aargvark)]
 struct Args {

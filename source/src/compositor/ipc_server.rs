@@ -4,7 +4,7 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-use mononocle_ipc::{WindowEvent, WindowInfo, protocol};
+use crate::ipc::{WindowEvent, WindowInfo, protocol};
 
 /// State shared between the compositor thread and the IPC server thread.
 pub struct SharedIpcState {
