@@ -159,6 +159,10 @@ impl XdgShellHandler for State {
             state.states.set(xdg_toplevel::State::Maximized);
         });
         surface.send_configure();
+        // Notify the client that its surface is on our output so it knows the
+        // correct scale/transform before it renders its first frame.
+        self.output.enter(surface.wl_surface());
+
         let is_first_visible =
             self.current_window_id.is_none() ||
                 !self.windows.iter().any(|w| w.desktop == desktop && w.window.alive());

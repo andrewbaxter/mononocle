@@ -63,6 +63,7 @@ use {
         },
     },
     std::{
+        error::Error as _,
         path::PathBuf,
         sync::Arc,
     },
@@ -72,6 +73,8 @@ use {
 struct Args {
     /// Path to the JSON configuration file.
     config: Option<PathBuf>,
+    /// Validate the configuration and exit.
+    validate: Option<()>,
 }
 
 fn main() {
@@ -90,8 +93,23 @@ fn main() {
     } else {
         Config::default()
     };
+    if args.validate.is_some() {
+        if let Some(bg) = &config.background {
+            if !bg.exists() {
+                eprintln!("Config validation failed: background path does not exist: {}", bg.display());
+                std::process::exit(1);
+            }
+        }
+        println!("Config OK");
+        return;
+    }
     if let Err(e) = run(config) {
         eprintln!("Compositor error: {e}");
+        let mut src = e.source();
+        while let Some(cause) = src {
+            eprintln!("  caused by: {cause}");
+            src = cause.source();
+        }
         std::process::exit(1);
     }
 }
@@ -104,9 +122,10 @@ fn run(config: Config) -> Result<(), Box<dyn std::error::Error>> {
     let output_size: Size<i32, Logical> = backend.window_size().to_logical(1);
     let mut state = State::new(&display, output_size, config.clone(), ipc_shared.clone(), ipc_cmd_rx);
     state.seat.add_keyboard(Default::default(), 200, 25).expect("keyboard");
+    state.seat.add_pointer();
 
     // Create Wayland socket
-    let listener = ListeningSocket::bind_auto("wayland", 1 ..= 9)?;
+    let listener = ListeningSocket::bind_auto("mononocle", 1 ..= 9)?;
     let socket_name = listener.socket_name().unwrap().to_string_lossy().to_string();
 
     // SAFETY: single-threaded at this point, no concurrent env reads
