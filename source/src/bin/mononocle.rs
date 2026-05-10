@@ -321,12 +321,36 @@ fn pointer_focus_surface(
     state: &State,
     pos: Point<f64, Logical>,
 ) -> Option<(smithay::reexports::wayland_server::protocol::wl_surface::WlSurface, Point<f64, Logical>)> {
+    use smithay::desktop::PopupManager;
     use smithay::utils::IsAlive;
 
     if let Some(origin) = state.current_window_surface_origin() {
         if let Some(id) = state.current_window_id {
             if let Some(mw) = state.windows.iter().find(|w| w.id == id && w.window.alive()) {
                 let geo = mw.window.geometry();
+
+                if let Some(toplevel) = mw.window.toplevel() {
+                    // Check popups first (front to back)
+                    for (popup, popup_offset) in PopupManager::popups_for_surface(toplevel.wl_surface()) {
+                        let popup_geo = popup.geometry();
+                        // Surface origin accounts for parent geo, popup offset,
+                        // and the popup's own geometry offset (shadows/margins).
+                        let px = (origin.x + geo.loc.x + popup_offset.x - popup_geo.loc.x) as f64;
+                        let py = (origin.y + geo.loc.y + popup_offset.y - popup_geo.loc.y) as f64;
+                        // Hit-test against the full surface area (from surface
+                        // origin, using geometry offset + size to cover the
+                        // invisible margin/shadow area too).
+                        let full_w = (popup_geo.loc.x + popup_geo.size.w) as f64;
+                        let full_h = (popup_geo.loc.y + popup_geo.size.h) as f64;
+                        if pos.x >= px && pos.y >= py
+                            && pos.x < px + full_w
+                            && pos.y < py + full_h
+                        {
+                            let surf_origin = Point::from((px, py));
+                            return Some((popup.wl_surface().clone(), surf_origin));
+                        }
+                    }
+                }
                 // Hit-test: use actual geometry bounds if valid, otherwise content area
                 let hit = if geo.size.w > 0 && geo.size.h > 0 {
                     let gx = (origin.x + geo.loc.x) as f64;

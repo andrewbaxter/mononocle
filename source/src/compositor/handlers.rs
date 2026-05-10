@@ -39,8 +39,6 @@ use {
         },
         utils::{
             IsAlive,
-            Point,
-            Rectangle,
             SERIAL_COUNTER,
             Serial,
         },
@@ -211,16 +209,12 @@ impl XdgShellHandler for State {
         self.sync_ipc_windows();
     }
 
-    fn new_popup(&mut self, surface: PopupSurface, _positioner: PositionerState) {
-        let area = self.window_area();
-        let requested_size = surface.with_pending_state(|state| state.positioner.rect_size);
-
-        // Center popup within the window area; position is relative to parent (at
-        // area.loc)
-        let rel_x = ((area.size.w - requested_size.w) / 2).max(0);
-        let rel_y = ((area.size.h - requested_size.h) / 2).max(0);
+    fn new_popup(&mut self, surface: PopupSurface, positioner: PositionerState) {
+        // Use the positioner's computed geometry which respects anchor rect,
+        // gravity, and offset as requested by the client (e.g. menu placement).
+        let geo = positioner.get_geometry();
         surface.with_pending_state(|state| {
-            state.geometry = Rectangle::new(Point::from((rel_x, rel_y)), requested_size);
+            state.geometry = geo;
         });
         surface.send_configure().ok();
         self.popup_manager.track_popup(PopupKind::Xdg(surface)).ok();

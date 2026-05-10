@@ -569,10 +569,15 @@ impl State {
                     };
 
                     // Popups (in front of window surface)
+                    // popup_offset is relative to parent window geometry;
+                    // add geo.loc to convert from geometry-relative to surface-relative,
+                    // then subtract the popup's own geometry offset so its visible
+                    // content (not its shadow/margin surface) lands at the right spot.
                     for (popup, popup_offset) in PopupManager::popups_for_surface(toplevel.wl_surface()) {
+                        let popup_geo = popup.geometry();
                         let popup_loc = Point::<i32, Physical>::from((
-                            origin_x + popup_offset.x,
-                            origin_y + popup_offset.y,
+                            origin_x + geo.loc.x + popup_offset.x - popup_geo.loc.x,
+                            origin_y + geo.loc.y + popup_offset.y - popup_geo.loc.y,
                         ));
                         for elem in render_elements_from_surface_tree::<GlesRenderer, CompElement>(
                             renderer,
