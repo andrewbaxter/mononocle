@@ -102,6 +102,12 @@ impl CompositorHandler for State {
     fn commit(&mut self, surface: &WlSurface) {
         smithay::backend::renderer::utils::on_commit_buffer_handler::<Self>(surface);
         self.popup_manager.commit(surface);
+        // Update the bounding box for any window whose surface was committed.
+        for mw in &self.windows {
+            if mw.window.toplevel().map_or(false, |t| t.wl_surface() == surface) {
+                mw.window.on_commit();
+            }
+        }
         {
             let mut layer_map = layer_map_for_output(&self.output);
             layer_map.cleanup();
@@ -157,6 +163,10 @@ impl XdgShellHandler for State {
         surface.with_pending_state(|state| {
             state.size = Some(content_area.size);
             state.states.set(xdg_toplevel::State::Maximized);
+            state.states.set(xdg_toplevel::State::TiledLeft);
+            state.states.set(xdg_toplevel::State::TiledRight);
+            state.states.set(xdg_toplevel::State::TiledTop);
+            state.states.set(xdg_toplevel::State::TiledBottom);
         });
         surface.send_configure();
         // Notify the client that its surface is on our output so it knows the

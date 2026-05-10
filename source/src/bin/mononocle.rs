@@ -169,6 +169,11 @@ fn run(config: Config) -> Result<(), Box<dyn std::error::Error>> {
                     refresh: 60_000,
                 };
                 state.output.change_current_state(Some(mode), None, None, None);
+                // Re-arrange layer map so non_exclusive_zone reflects the new size.
+                {
+                    let mut layer_map = smithay::desktop::layer_map_for_output(&state.output);
+                    layer_map.arrange();
+                }
                 if let Some(id) = state.current_window_id {
                     let (title, app_id) = state.windows.iter()
                         .find(|w| w.id == id)
