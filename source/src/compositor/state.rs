@@ -519,48 +519,10 @@ impl State {
     pub fn render_elements(&self, renderer: &mut GlesRenderer) -> Vec<CompElement> {
         let mut elements: Vec<CompElement> = Vec::new();
 
-        // Background image (rendered first, behind everything)
-        if let Some((bg, (img_w, img_h))) = &self.background_buffer {
-            let screen_w = self.output_size.w as f64;
-            let screen_h = self.output_size.h as f64;
-            let img_w = *img_w as f64;
-            let img_h = *img_h as f64;
-            let [align_x, align_y] = self.config.background_align;
-
-            let src_rect = match self.config.background_size {
-                BackgroundSize::Cover => cover_src_rect(img_w, img_h, screen_w, screen_h, align_x, align_y),
-                BackgroundSize::MinCover => {
-                    if img_w >= screen_w && img_h >= screen_h {
-                        // Image is at least as large as screen in every dimension: use
-                        // original size and crop with alignment.
-                        let src_x = (img_w - screen_w) * align_x;
-                        let src_y = (img_h - screen_h) * align_y;
-                        Rectangle::<f64, Logical>::new(
-                            Point::from((src_x, src_y)),
-                            Size::from((screen_w, screen_h)),
-                        )
-                    } else {
-                        // Image is smaller than screen in at least one dimension: cover.
-                        cover_src_rect(img_w, img_h, screen_w, screen_h, align_x, align_y)
-                    }
-                },
-            };
-            elements.push(
-                TextureRenderElement::from_texture_buffer(
-                    Point::from((0.0f64, 0.0f64)),
-                    bg,
-                    None,
-                    Some(src_rect),
-                    Some(self.output_size),
-                    Kind::Unspecified,
-                ).into(),
-            );
-        }
-
         let layer_map = layer_map_for_output(&self.output);
 
-        // Layer shell: Background and Bottom (behind windows)
-        for layer in [Layer::Background, Layer::Bottom] {
+        // Layer shell: Overlay and Top (in front of windows) — pushed first = highest z-order
+        for layer in [Layer::Overlay, Layer::Top] {
             for surface in layer_map.layers_on(layer) {
                 let loc =
                     layer_map
@@ -647,8 +609,8 @@ impl State {
             }
         }
 
-        // Layer shell: Top and Overlay (in front of windows)
-        for layer in [Layer::Top, Layer::Overlay] {
+        // Layer shell: Bottom and Background (behind windows)
+        for layer in [Layer::Bottom, Layer::Background] {
             for surface in layer_map.layers_on(layer) {
                 let loc =
                     layer_map
@@ -667,6 +629,42 @@ impl State {
                 }
             }
         }
+
+        // Background image (pushed last = lowest z-order, behind everything)
+        if let Some((bg, (img_w, img_h))) = &self.background_buffer {
+            let screen_w = self.output_size.w as f64;
+            let screen_h = self.output_size.h as f64;
+            let img_w = *img_w as f64;
+            let img_h = *img_h as f64;
+            let [align_x, align_y] = self.config.background_align;
+
+            let src_rect = match self.config.background_size {
+                BackgroundSize::Cover => cover_src_rect(img_w, img_h, screen_w, screen_h, align_x, align_y),
+                BackgroundSize::MinCover => {
+                    if img_w >= screen_w && img_h >= screen_h {
+                        let src_x = (img_w - screen_w) * align_x;
+                        let src_y = (img_h - screen_h) * align_y;
+                        Rectangle::<f64, Logical>::new(
+                            Point::from((src_x, src_y)),
+                            Size::from((screen_w, screen_h)),
+                        )
+                    } else {
+                        cover_src_rect(img_w, img_h, screen_w, screen_h, align_x, align_y)
+                    }
+                },
+            };
+            elements.push(
+                TextureRenderElement::from_texture_buffer(
+                    Point::from((0.0f64, 0.0f64)),
+                    bg,
+                    None,
+                    Some(src_rect),
+                    Some(self.output_size),
+                    Kind::Unspecified,
+                ).into(),
+            );
+        }
+
         elements
     }
 

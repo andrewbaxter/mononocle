@@ -2,8 +2,9 @@
   ({ pkg-config
    , wayland
    , libxkbcommon
-   , mesa
+   , libglvnd
    , wayland-scanner
+   , makeWrapper
    }:
   let
     naersk = pkgs.callPackage
@@ -13,7 +14,17 @@
   naersk.buildPackage {
     src = ./source;
     release = !debug;
-    nativeBuildInputs = [ pkg-config wayland-scanner ];
-    buildInputs = [ wayland libxkbcommon mesa ];
+    nativeBuildInputs = [ pkg-config wayland-scanner makeWrapper ];
+    buildInputs = [ wayland libxkbcommon libglvnd ];
+    RUSTFLAGS = toString (map (arg: "-C link-arg=" + arg) [
+      "-Wl,--push-state,--no-as-needed"
+      "-lEGL"
+      "-lwayland-client"
+      "-Wl,--pop-state"
+    ]);
+    postInstall = ''
+      wrapProgram $out/bin/mononocle \
+        --prefix LD_LIBRARY_PATH : ${pkgs.lib.makeLibraryPath [ wayland libxkbcommon libglvnd ]}
+    '';
   })
 { }
