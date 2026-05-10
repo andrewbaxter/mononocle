@@ -36,6 +36,8 @@ pub struct WindowRule {
     pub border_thickness: Option<i32>,
     /// Override border color as [r, g, b, a] in 0..1.
     pub border_color: Option<[f32; 4]>,
+    /// Start the window in fullscreen mode (no padding/border/decorations).
+    pub fullscreen: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

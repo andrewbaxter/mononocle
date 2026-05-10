@@ -131,6 +131,7 @@ pub struct ManagedWindow {
     pub id: u64,
     pub window: Window,
     pub desktop: u32,
+    pub fullscreen: bool,
 }
 
 impl ManagedWindow {
@@ -188,6 +189,7 @@ pub struct EffectiveWindowParams {
     pub inner_padding_color: [f32; 4],
     pub border_thickness: i32,
     pub border_color: [f32; 4],
+    pub fullscreen: bool,
 }
 
 /// A compiled window rule with pre-built regexes.
@@ -294,7 +296,11 @@ impl State {
 
     /// Compute effective decoration parameters for a window, applying any
     /// matching window rules over the global config defaults.
-    pub fn effective_window_params(&self, title: Option<&str>, app_id: Option<&str>) -> EffectiveWindowParams {
+    pub fn effective_window_params_for(&self, mw: &ManagedWindow) -> EffectiveWindowParams {
+        self.effective_window_params(mw.title().as_deref(), mw.app_id().as_deref(), mw.fullscreen)
+    }
+
+    pub fn effective_window_params(&self, title: Option<&str>, app_id: Option<&str>, is_fullscreen: bool) -> EffectiveWindowParams {
         let mut params = EffectiveWindowParams {
             padding: self.config.padding,
             corner_radius: self.config.corner_radius,
@@ -302,6 +308,7 @@ impl State {
             inner_padding_color: self.config.inner_padding_color,
             border_thickness: self.config.border_thickness,
             border_color: self.config.border_color,
+            fullscreen: false,
         };
         for cr in &self.compiled_rules {
             let title_matches = cr.title_re.as_ref().map_or(true, |re| {
@@ -317,20 +324,33 @@ impl State {
                 if let Some(v) = cr.rule.inner_padding_color { params.inner_padding_color = v; }
                 if let Some(v) = cr.rule.border_thickness { params.border_thickness = v; }
                 if let Some(v) = cr.rule.border_color { params.border_color = v; }
+                if let Some(v) = cr.rule.fullscreen { params.fullscreen = v; }
             }
+        }
+        if is_fullscreen || params.fullscreen {
+            params.fullscreen = true;
+            params.padding = 0;
+            params.corner_radius = 0.0;
+            params.inner_padding = 0;
+            params.border_thickness = 0;
         }
         params
     }
 
     /// The total decoration box for a window: layer zone minus outer padding.
+    /// When fullscreen, uses the full output size.
     fn window_outer_area_for(&self, params: &EffectiveWindowParams) -> Rectangle<i32, Logical> {
-        let layer_map = layer_map_for_output(&self.output);
-        let zone = layer_map.non_exclusive_zone();
-        let p = params.padding;
-        Rectangle::new(
-            Point::from((zone.loc.x + p, zone.loc.y + p)),
-            Size::from(((zone.size.w - 2 * p).max(1), (zone.size.h - 2 * p).max(1))),
-        )
+        if params.fullscreen {
+            Rectangle::new(Point::from((0, 0)), self.output_size)
+        } else {
+            let layer_map = layer_map_for_output(&self.output);
+            let zone = layer_map.non_exclusive_zone();
+            let p = params.padding;
+            Rectangle::new(
+                Point::from((zone.loc.x + p, zone.loc.y + p)),
+                Size::from(((zone.size.w - 2 * p).max(1), (zone.size.h - 2 * p).max(1))),
+            )
+        }
     }
 
     /// The content area for a window after subtracting border and inner padding.
@@ -367,17 +387,21 @@ impl State {
         if let Some(w) = self.windows.iter().find(|w| w.id == id) {
             self.current_desktop = w.desktop;
         }
-        let (title, app_id) = self.windows.iter()
+        let params = self.windows.iter()
             .find(|w| w.id == id)
-            .map(|mw| (mw.title(), mw.app_id()))
-            .unwrap_or((None, None));
-        let params = self.effective_window_params(title.as_deref(), app_id.as_deref());
+            .map(|mw| self.effective_window_params_for(mw))
+            .unwrap_or_else(|| self.effective_window_params(None, None, false));
         let content_area = self.window_content_area_for(&params);
         if let Some(mw) = self.windows.iter().find(|w| w.id == id) {
             if let Some(toplevel) = mw.window.toplevel() {
                 toplevel.with_pending_state(|state| {
                     state.size = Some(content_area.size);
                     state.states.set(xdg_toplevel::State::Activated);
+                    if params.fullscreen {
+                        state.states.set(xdg_toplevel::State::Fullscreen);
+                    } else {
+                        state.states.unset(xdg_toplevel::State::Fullscreen);
+                    }
                 });
                 toplevel.send_pending_configure();
             }
@@ -415,11 +439,10 @@ impl State {
             }
         }
         if let Some(new_id) = first {
-            let (title, app_id) = self.windows.iter()
+            let params = self.windows.iter()
                 .find(|w| w.id == new_id)
-                .map(|mw| (mw.title(), mw.app_id()))
-                .unwrap_or((None, None));
-            let params = self.effective_window_params(title.as_deref(), app_id.as_deref());
+                .map(|mw| self.effective_window_params_for(mw))
+                .unwrap_or_else(|| self.effective_window_params(None, None, false));
             let content_area = self.window_content_area_for(&params);
             if let Some(mw) = self.windows.iter().find(|w| w.id == new_id) {
                 if let Some(t) = mw.window.toplevel() {
@@ -446,6 +469,34 @@ impl State {
         }
     }
 
+    pub fn toggle_fullscreen(&mut self, id: Option<u64>) {
+        let target = id.or(self.current_window_id);
+        if let Some(wid) = target {
+            if let Some(mw) = self.windows.iter_mut().find(|w| w.id == wid) {
+                mw.fullscreen = !mw.fullscreen;
+            }
+            // Reconfigure the window with updated sizing.
+            let params = self.windows.iter()
+                .find(|w| w.id == wid)
+                .map(|mw| self.effective_window_params_for(mw))
+                .unwrap_or_else(|| self.effective_window_params(None, None, false));
+            let content_area = self.window_content_area_for(&params);
+            if let Some(mw) = self.windows.iter().find(|w| w.id == wid) {
+                if let Some(t) = mw.window.toplevel() {
+                    t.with_pending_state(|s| {
+                        s.size = Some(content_area.size);
+                        if params.fullscreen {
+                            s.states.set(xdg_toplevel::State::Fullscreen);
+                        } else {
+                            s.states.unset(xdg_toplevel::State::Fullscreen);
+                        }
+                    });
+                    t.send_pending_configure();
+                }
+            }
+        }
+    }
+
     pub fn process_pending(&mut self) {
         let dead: Vec<u64> = self.windows.iter().filter(|w| !w.window.alive()).map(|w| w.id).collect();
         for id in dead {
@@ -457,6 +508,7 @@ impl State {
                 IpcCommand::ShowDesktop(n) => self.show_desktop(n),
                 IpcCommand::ShowWindow(id) => self.show_window(id),
                 IpcCommand::KillWindow(id) => self.kill_window(id),
+                IpcCommand::ToggleFullscreen(id) => self.toggle_fullscreen(id),
             }
         }
     }
@@ -472,11 +524,10 @@ impl State {
                     .next();
             self.current_window_id = next;
             if let Some(next_id) = next {
-                let (title, app_id) = self.windows.iter()
+                let params = self.windows.iter()
                     .find(|w| w.id == next_id)
-                    .map(|mw| (mw.title(), mw.app_id()))
-                    .unwrap_or((None, None));
-                let params = self.effective_window_params(title.as_deref(), app_id.as_deref());
+                    .map(|mw| self.effective_window_params_for(mw))
+                    .unwrap_or_else(|| self.effective_window_params(None, None, false));
                 let content_area = self.window_content_area_for(&params);
                 if let Some(mw) = self.windows.iter().find(|w| w.id == next_id) {
                     if let Some(t) = mw.window.toplevel() {
@@ -546,9 +597,7 @@ impl State {
         // Current window: popups + surface + decorations (front to back)
         if let Some(id) = self.current_window_id {
             if let Some(mw) = self.windows.iter().find(|w| w.id == id && w.window.alive()) {
-                let title = mw.title();
-                let app_id = mw.app_id();
-                let params = self.effective_window_params(title.as_deref(), app_id.as_deref());
+                let params = self.effective_window_params_for(mw);
                 let outer_rect = self.window_outer_area_for(&params);
                 let content_area = self.window_content_area_for(&params);
                 let radius = params.corner_radius;
@@ -698,9 +747,7 @@ impl State {
     pub fn current_window_surface_origin(&self) -> Option<Point<i32, Logical>> {
         let id = self.current_window_id?;
         let mw = self.windows.iter().find(|w| w.id == id && w.window.alive())?;
-        let title = mw.title();
-        let app_id = mw.app_id();
-        let params = self.effective_window_params(title.as_deref(), app_id.as_deref());
+        let params = self.effective_window_params_for(mw);
         let content_area = self.window_content_area_for(&params);
         let geo = mw.window.geometry();
         if geo.size.w > 0 && geo.size.h > 0

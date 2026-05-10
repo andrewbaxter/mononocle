@@ -6,6 +6,7 @@ use {
     mononocle::ipc::{
         KillWindowArgs,
         ListWindows,
+        ToggleFullscreenArgs,
         Watch,
         protocol,
     },
@@ -32,11 +33,19 @@ enum Command {
     ShowWindow(u64),
     /// Kill a window. Kills focused window if no id given.
     Kill(KillArgs),
+    /// Toggle fullscreen for a window. Toggles focused window if no id given.
+    ToggleFullscreen(ToggleFullscreenCliArgs),
 }
 
 #[derive(Aargvark)]
 struct KillArgs {
     /// Window id to kill. Kills the focused window if not specified.
+    id: Option<u64>,
+}
+
+#[derive(Aargvark)]
+struct ToggleFullscreenCliArgs {
+    /// Window id to toggle fullscreen. Toggles the focused window if not specified.
     id: Option<u64>,
 }
 
@@ -101,6 +110,14 @@ async fn run(socket: PathBuf, command: Command) -> Result<(), String> {
             match args.id {
                 Some(id) => println!("Sent kill to window {id}."),
                 None => println!("Sent kill to focused window."),
+            }
+        },
+        Command::ToggleFullscreen(args) => {
+            let mut client = protocol::Client::new(&socket).await?;
+            client.send_req(ToggleFullscreenArgs { id: args.id }).await?;
+            match args.id {
+                Some(id) => println!("Toggled fullscreen for window {id}."),
+                None => println!("Toggled fullscreen for focused window."),
             }
         },
     }

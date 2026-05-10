@@ -175,11 +175,10 @@ fn run(config: Config) -> Result<(), Box<dyn std::error::Error>> {
                     layer_map.arrange();
                 }
                 if let Some(id) = state.current_window_id {
-                    let (title, app_id) = state.windows.iter()
+                    let params = state.windows.iter()
                         .find(|w| w.id == id)
-                        .map(|mw| (mw.title(), mw.app_id()))
-                        .unwrap_or((None, None));
-                    let params = state.effective_window_params(title.as_deref(), app_id.as_deref());
+                        .map(|mw| state.effective_window_params_for(mw))
+                        .unwrap_or_else(|| state.effective_window_params(None, None, false));
                     let content_area = state.window_content_area_for(&params);
                     if let Some(mw) = state.windows.iter().find(|w| w.id == id) {
                         if let Some(t) = mw.window.toplevel() {

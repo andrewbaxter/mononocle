@@ -38,6 +38,12 @@ pub struct KillWindowArgs {
     pub id: Option<u64>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct ToggleFullscreenArgs {
+    /// Toggle fullscreen for this window id, or the focused window if None.
+    pub id: Option<u64>,
+}
+
 // Distinct unit newtypes so glove's ReqTrait impl doesn't conflict.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct ListWindows;
@@ -49,5 +55,6 @@ glove::reqresp!(pub protocol {
     ShowDesktop(u32) =>(),
     ShowWindow(u64) =>(),
     KillWindow(KillWindowArgs) =>(),
+    ToggleFullscreen(ToggleFullscreenArgs) =>(),
     Watch(Watch) => Vec < WindowEvent >,
 });

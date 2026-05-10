@@ -39,6 +39,7 @@ pub enum IpcCommand {
     ShowDesktop(u32),
     ShowWindow(u64),
     KillWindow(Option<u64>),
+    ToggleFullscreen(Option<u64>),
 }
 
 /// Spawns the IPC server in a dedicated thread with its own Tokio runtime.
@@ -113,6 +114,10 @@ async fn handle_connection(
             },
             protocol::ServerReq::KillWindow(respond, args) => {
                 cmd_tx.send(IpcCommand::KillWindow(args.id)).ok();
+                respond(())
+            },
+            protocol::ServerReq::ToggleFullscreen(respond, args) => {
+                cmd_tx.send(IpcCommand::ToggleFullscreen(args.id)).ok();
                 respond(())
             },
             protocol::ServerReq::Watch(respond, _) => {

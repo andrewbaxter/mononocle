@@ -156,7 +156,8 @@ impl XdgShellHandler for State {
                 .and_then(|d| d.lock().ok())
                 .and_then(|g| g.app_id.clone())
         });
-        let params = self.effective_window_params(title.as_deref(), app_id.as_deref());
+        let params = self.effective_window_params(title.as_deref(), app_id.as_deref(), false);
+        let is_fullscreen = params.fullscreen;
         let content_area = self.window_content_area_for(&params);
         surface.with_pending_state(|state| {
             state.size = Some(content_area.size);
@@ -165,6 +166,9 @@ impl XdgShellHandler for State {
             state.states.set(xdg_toplevel::State::TiledRight);
             state.states.set(xdg_toplevel::State::TiledTop);
             state.states.set(xdg_toplevel::State::TiledBottom);
+            if is_fullscreen {
+                state.states.set(xdg_toplevel::State::Fullscreen);
+            }
         });
         surface.send_configure();
         // Notify the client that its surface is on our output so it knows the
@@ -178,6 +182,7 @@ impl XdgShellHandler for State {
             id,
             window,
             desktop,
+            fullscreen: is_fullscreen,
         };
         let info = managed.to_info(if is_first_visible {
             Some(id)
