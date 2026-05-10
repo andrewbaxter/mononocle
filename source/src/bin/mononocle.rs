@@ -302,6 +302,7 @@ fn handle_input(state: &mut State, event: InputEvent<WinitInput>) {
                     serial: SERIAL_COUNTER.next_serial(),
                     time: event.time() as u32,
                 });
+                ptr.frame(state);
             }
         },
         InputEvent::PointerButton { event } => {
@@ -312,6 +313,7 @@ fn handle_input(state: &mut State, event: InputEvent<WinitInput>) {
                     serial: SERIAL_COUNTER.next_serial(),
                     time: event.time() as u32,
                 });
+                ptr.frame(state);
             }
         },
         _ => { },
@@ -328,24 +330,27 @@ fn pointer_focus_surface(
     if let Some(origin) = state.current_window_surface_origin() {
         if let Some(id) = state.current_window_id {
             if let Some(mw) = state.windows.iter().find(|w| w.id == id && w.window.alive()) {
-                let geo = mw.window.geometry();
-                let geo_origin: Point<f64, Logical> = Point::from((
-                    (origin.x + geo.loc.x) as f64,
-                    (origin.y + geo.loc.y) as f64,
+                // Window::surface_under expects a point relative to the
+                // window's wl_surface origin (not the geometry origin).
+                // It internally accounts for geometry().loc when computing
+                // popup offsets, so we must NOT add geo.loc to the input.
+                let origin_f: Point<f64, Logical> = Point::from((
+                    origin.x as f64,
+                    origin.y as f64,
                 ));
-                let point_in_window = Point::from((
-                    pos.x - geo_origin.x,
-                    pos.y - geo_origin.y,
+                let point_in_surface = Point::from((
+                    pos.x - origin_f.x,
+                    pos.y - origin_f.y,
                 ));
 
                 // Try popup surfaces first (proper input-region hit-testing)
                 if let Some((surface, surface_loc)) = mw.window.surface_under(
-                    point_in_window,
+                    point_in_surface,
                     WindowSurfaceType::POPUP | WindowSurfaceType::SUBSURFACE,
                 ) {
                     let surf_origin = Point::from((
-                        geo_origin.x + surface_loc.x as f64,
-                        geo_origin.y + surface_loc.y as f64,
+                        origin_f.x + surface_loc.x as f64,
+                        origin_f.y + surface_loc.y as f64,
                     ));
                     return Some((surface, surf_origin));
                 }
@@ -355,6 +360,7 @@ fn pointer_focus_surface(
                 // dismissing the menu (e.g. pointer in gap between menu
                 // button and popup surface).
                 if let Some(toplevel) = mw.window.toplevel() {
+                    let geo = mw.window.geometry();
                     for (popup, popup_offset) in PopupManager::popups_for_surface(toplevel.wl_surface()) {
                         let popup_geo = popup.geometry();
                         // Skip popups that haven't committed content yet
@@ -362,8 +368,8 @@ fn pointer_focus_surface(
                             continue;
                         }
                         let surf_origin = Point::from((
-                            geo_origin.x + popup_offset.x as f64 - popup_geo.loc.x as f64,
-                            geo_origin.y + popup_offset.y as f64 - popup_geo.loc.y as f64,
+                            origin_f.x + geo.loc.x as f64 + popup_offset.x as f64 - popup_geo.loc.x as f64,
+                            origin_f.y + geo.loc.y as f64 + popup_offset.y as f64 - popup_geo.loc.y as f64,
                         ));
                         return Some((popup.wl_surface().clone(), surf_origin));
                     }
@@ -371,12 +377,12 @@ fn pointer_focus_surface(
 
                 // No popups — hit-test the toplevel
                 if let Some((surface, surface_loc)) = mw.window.surface_under(
-                    point_in_window,
+                    point_in_surface,
                     WindowSurfaceType::TOPLEVEL | WindowSurfaceType::SUBSURFACE,
                 ) {
                     let surf_origin = Point::from((
-                        geo_origin.x + surface_loc.x as f64,
-                        geo_origin.y + surface_loc.y as f64,
+                        origin_f.x + surface_loc.x as f64,
+                        origin_f.y + surface_loc.y as f64,
                     ));
                     return Some((surface, surf_origin));
                 }
