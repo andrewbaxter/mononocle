@@ -519,30 +519,31 @@ impl State {
     pub fn render_elements(&self, renderer: &mut GlesRenderer) -> Vec<CompElement> {
         let mut elements: Vec<CompElement> = Vec::new();
 
-        let layer_map = layer_map_for_output(&self.output);
-
         // Layer shell: Overlay and Top (in front of windows) — pushed first = highest z-order
-        for layer in [Layer::Overlay, Layer::Top] {
-            for surface in layer_map.layers_on(layer) {
-                let loc =
-                    layer_map
-                        .layer_geometry(surface)
-                        .map(|g| Point::<i32, Physical>::from((g.loc.x, g.loc.y)))
-                        .unwrap_or_default();
-                for elem in render_elements_from_surface_tree::<GlesRenderer, CompElement>(
-                    renderer,
-                    surface.wl_surface(),
-                    loc,
-                    1.0,
-                    1.0,
-                    Kind::Unspecified,
-                ) {
-                    elements.push(elem);
+        {
+            let layer_map = layer_map_for_output(&self.output);
+            for layer in [Layer::Overlay, Layer::Top] {
+                for surface in layer_map.layers_on(layer) {
+                    let loc =
+                        layer_map
+                            .layer_geometry(surface)
+                            .map(|g| Point::<i32, Physical>::from((g.loc.x, g.loc.y)))
+                            .unwrap_or_default();
+                    for elem in render_elements_from_surface_tree::<GlesRenderer, CompElement>(
+                        renderer,
+                        surface.wl_surface(),
+                        loc,
+                        1.0,
+                        1.0,
+                        Kind::Unspecified,
+                    ) {
+                        elements.push(elem);
+                    }
                 }
             }
         }
 
-        // Current window: decorations + surface + popups
+        // Current window: popups + surface + decorations (front to back)
         if let Some(id) = self.current_window_id {
             if let Some(mw) = self.windows.iter().find(|w| w.id == id && w.window.alive()) {
                 let title = mw.title();
@@ -553,42 +554,8 @@ impl State {
                 let radius = params.corner_radius;
                 let shader = self.rounded_rect_shader.as_ref();
 
-                // Border (fills outer_rect; inner layers render on top)
-                if params.border_thickness > 0 {
-                    push_colored_rect(
-                        &mut elements,
-                        outer_rect,
-                        params.border_color,
-                        radius,
-                        shader,
-                    );
-                }
-
-                // Inner padding (fills outer_rect - border; window renders on top)
-                if params.inner_padding > 0 {
-                    let ip_rect = shrink_rect(outer_rect, params.border_thickness);
-                    let ip_radius = (radius - params.border_thickness as f32).max(0.0);
-                    push_colored_rect(
-                        &mut elements,
-                        ip_rect,
-                        params.inner_padding_color,
-                        ip_radius,
-                        shader,
-                    );
-                }
-
                 if let Some(toplevel) = mw.window.toplevel() {
-                    let win_loc = Point::<i32, Physical>::from((content_area.loc.x, content_area.loc.y));
-                    for elem in render_elements_from_surface_tree::<GlesRenderer, CompElement>(
-                        renderer,
-                        toplevel.wl_surface(),
-                        win_loc,
-                        1.0,
-                        1.0,
-                        Kind::Unspecified,
-                    ) {
-                        elements.push(elem);
-                    }
+                    // Popups (in front of window surface)
                     for (popup, popup_offset) in PopupManager::popups_for_surface(toplevel.wl_surface()) {
                         let popup_loc = Point::<i32, Physical>::from((
                             content_area.loc.x + popup_offset.x,
@@ -605,27 +572,67 @@ impl State {
                             elements.push(elem);
                         }
                     }
+
+                    // Window surface
+                    let win_loc = Point::<i32, Physical>::from((content_area.loc.x, content_area.loc.y));
+                    for elem in render_elements_from_surface_tree::<GlesRenderer, CompElement>(
+                        renderer,
+                        toplevel.wl_surface(),
+                        win_loc,
+                        1.0,
+                        1.0,
+                        Kind::Unspecified,
+                    ) {
+                        elements.push(elem);
+                    }
+                }
+
+                // Inner padding (behind window surface)
+                if params.inner_padding > 0 {
+                    let ip_rect = shrink_rect(outer_rect, params.border_thickness);
+                    let ip_radius = (radius - params.border_thickness as f32).max(0.0);
+                    push_colored_rect(
+                        &mut elements,
+                        ip_rect,
+                        params.inner_padding_color,
+                        ip_radius,
+                        shader,
+                    );
+                }
+
+                // Border (behind inner padding, fills outer_rect)
+                if params.border_thickness > 0 {
+                    push_colored_rect(
+                        &mut elements,
+                        outer_rect,
+                        params.border_color,
+                        radius,
+                        shader,
+                    );
                 }
             }
         }
 
         // Layer shell: Bottom and Background (behind windows)
-        for layer in [Layer::Bottom, Layer::Background] {
-            for surface in layer_map.layers_on(layer) {
-                let loc =
-                    layer_map
-                        .layer_geometry(surface)
-                        .map(|g| Point::<i32, Physical>::from((g.loc.x, g.loc.y)))
-                        .unwrap_or_default();
-                for elem in render_elements_from_surface_tree::<GlesRenderer, CompElement>(
-                    renderer,
-                    surface.wl_surface(),
-                    loc,
-                    1.0,
-                    1.0,
-                    Kind::Unspecified,
-                ) {
-                    elements.push(elem);
+        {
+            let layer_map = layer_map_for_output(&self.output);
+            for layer in [Layer::Bottom, Layer::Background] {
+                for surface in layer_map.layers_on(layer) {
+                    let loc =
+                        layer_map
+                            .layer_geometry(surface)
+                            .map(|g| Point::<i32, Physical>::from((g.loc.x, g.loc.y)))
+                            .unwrap_or_default();
+                    for elem in render_elements_from_surface_tree::<GlesRenderer, CompElement>(
+                        renderer,
+                        surface.wl_surface(),
+                        loc,
+                        1.0,
+                        1.0,
+                        Kind::Unspecified,
+                    ) {
+                        elements.push(elem);
+                    }
                 }
             }
         }
