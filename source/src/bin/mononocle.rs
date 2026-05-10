@@ -289,9 +289,9 @@ fn handle_input(state: &mut State, event: InputEvent<WinitInput>) {
         },
         InputEvent::PointerMotionAbsolute { event } => {
             let pos = event.position_transformed(state.output_size);
-            let surface = pointer_focus_surface(state, pos);
+            let focus = pointer_focus_surface(state, pos);
             if let Some(ptr) = state.seat.get_pointer() {
-                ptr.motion(state, surface.map(|s| (s, Point::from((0.0f64, 0.0f64)))), &MotionEvent {
+                ptr.motion(state, focus, &MotionEvent {
                     location: pos,
                     serial: SERIAL_COUNTER.next_serial(),
                     time: event.time() as u32,
@@ -315,17 +315,30 @@ fn handle_input(state: &mut State, event: InputEvent<WinitInput>) {
 fn pointer_focus_surface(
     state: &State,
     pos: Point<f64, Logical>,
-) -> Option<smithay::reexports::wayland_server::protocol::wl_surface::WlSurface> {
+) -> Option<(smithay::reexports::wayland_server::protocol::wl_surface::WlSurface, Point<f64, Logical>)> {
     use smithay::utils::IsAlive;
 
-    let area = state.window_area();
-    let in_window =
-        pos.x >= area.loc.x as f64 && pos.y >= area.loc.y as f64 && pos.x < (area.loc.x + area.size.w) as f64 &&
-            pos.y < (area.loc.y + area.size.h) as f64;
-    if in_window {
+    if let Some(origin) = state.current_window_surface_origin() {
         if let Some(id) = state.current_window_id {
             if let Some(mw) = state.windows.iter().find(|w| w.id == id && w.window.alive()) {
-                return mw.window.toplevel().map(|t| t.wl_surface().clone());
+                let geo = mw.window.geometry();
+                // Hit-test: use actual geometry bounds if valid, otherwise content area
+                let hit = if geo.size.w > 0 && geo.size.h > 0 {
+                    let gx = (origin.x + geo.loc.x) as f64;
+                    let gy = (origin.y + geo.loc.y) as f64;
+                    pos.x >= gx && pos.y >= gy
+                        && pos.x < gx + geo.size.w as f64
+                        && pos.y < gy + geo.size.h as f64
+                } else {
+                    let area = state.window_area();
+                    pos.x >= area.loc.x as f64 && pos.y >= area.loc.y as f64
+                        && pos.x < (area.loc.x + area.size.w) as f64
+                        && pos.y < (area.loc.y + area.size.h) as f64
+                };
+                if hit {
+                    let surf_origin = Point::from((origin.x as f64, origin.y as f64));
+                    return mw.window.toplevel().map(|t| (t.wl_surface().clone(), surf_origin));
+                }
             }
         }
     }

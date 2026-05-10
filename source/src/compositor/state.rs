@@ -555,11 +555,24 @@ impl State {
                 let shader = self.rounded_rect_shader.as_ref();
 
                 if let Some(toplevel) = mw.window.toplevel() {
+                    // Center the window if its committed geometry is valid and
+                    // smaller than the content area (e.g. non-resizable windows).
+                    let geo = mw.window.geometry();
+                    let (origin_x, origin_y) = if geo.size.w > 0 && geo.size.h > 0
+                        && (geo.size.w < content_area.size.w || geo.size.h < content_area.size.h)
+                    {
+                        let cx = content_area.loc.x + (content_area.size.w - geo.size.w) / 2;
+                        let cy = content_area.loc.y + (content_area.size.h - geo.size.h) / 2;
+                        (cx - geo.loc.x, cy - geo.loc.y)
+                    } else {
+                        (content_area.loc.x, content_area.loc.y)
+                    };
+
                     // Popups (in front of window surface)
                     for (popup, popup_offset) in PopupManager::popups_for_surface(toplevel.wl_surface()) {
                         let popup_loc = Point::<i32, Physical>::from((
-                            content_area.loc.x + popup_offset.x,
-                            content_area.loc.y + popup_offset.y,
+                            origin_x + popup_offset.x,
+                            origin_y + popup_offset.y,
                         ));
                         for elem in render_elements_from_surface_tree::<GlesRenderer, CompElement>(
                             renderer,
@@ -574,7 +587,7 @@ impl State {
                     }
 
                     // Window surface
-                    let win_loc = Point::<i32, Physical>::from((content_area.loc.x, content_area.loc.y));
+                    let win_loc = Point::<i32, Physical>::from((origin_x, origin_y));
                     for elem in render_elements_from_surface_tree::<GlesRenderer, CompElement>(
                         renderer,
                         toplevel.wl_surface(),
@@ -673,6 +686,27 @@ impl State {
         }
 
         elements
+    }
+
+    /// Compute the surface origin for the current window, centering its
+    /// geometry within the content area when it is smaller (e.g. non-resizable).
+    pub fn current_window_surface_origin(&self) -> Option<Point<i32, Logical>> {
+        let id = self.current_window_id?;
+        let mw = self.windows.iter().find(|w| w.id == id && w.window.alive())?;
+        let title = mw.title();
+        let app_id = mw.app_id();
+        let params = self.effective_window_params(title.as_deref(), app_id.as_deref());
+        let content_area = self.window_content_area_for(&params);
+        let geo = mw.window.geometry();
+        if geo.size.w > 0 && geo.size.h > 0
+            && (geo.size.w < content_area.size.w || geo.size.h < content_area.size.h)
+        {
+            let cx = content_area.loc.x + (content_area.size.w - geo.size.w) / 2;
+            let cy = content_area.loc.y + (content_area.size.h - geo.size.h) / 2;
+            Some(Point::from((cx - geo.loc.x, cy - geo.loc.y)))
+        } else {
+            Some(Point::from((content_area.loc.x, content_area.loc.y)))
+        }
     }
 
     pub fn send_frames(&self, time_ms: u32) {
