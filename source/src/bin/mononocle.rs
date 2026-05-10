@@ -321,66 +321,37 @@ fn pointer_focus_surface(
     state: &State,
     pos: Point<f64, Logical>,
 ) -> Option<(smithay::reexports::wayland_server::protocol::wl_surface::WlSurface, Point<f64, Logical>)> {
-    use smithay::desktop::PopupManager;
+    use smithay::desktop::WindowSurfaceType;
     use smithay::utils::IsAlive;
 
     if let Some(origin) = state.current_window_surface_origin() {
         if let Some(id) = state.current_window_id {
             if let Some(mw) = state.windows.iter().find(|w| w.id == id && w.window.alive()) {
                 let geo = mw.window.geometry();
-
-                if let Some(toplevel) = mw.window.toplevel() {
-                    // Check popups first (front to back)
-                    let mut fallback_popup: Option<(smithay::reexports::wayland_server::protocol::wl_surface::WlSurface, Point<f64, Logical>)> = None;
-                    for (popup, popup_offset) in PopupManager::popups_for_surface(toplevel.wl_surface()) {
-                        let popup_geo = popup.geometry();
-                        // Surface origin accounts for parent geo, popup offset,
-                        // and the popup's own geometry offset (shadows/margins).
-                        let px = (origin.x + geo.loc.x + popup_offset.x - popup_geo.loc.x) as f64;
-                        let py = (origin.y + geo.loc.y + popup_offset.y - popup_geo.loc.y) as f64;
-                        // Hit-test against the full surface area (from surface
-                        // origin, using geometry offset + size to cover the
-                        // invisible margin/shadow area too).
-                        let full_w = (popup_geo.loc.x + popup_geo.size.w) as f64;
-                        let full_h = (popup_geo.loc.y + popup_geo.size.h) as f64;
-                        if pos.x >= px && pos.y >= py
-                            && pos.x < px + full_w
-                            && pos.y < py + full_h
-                        {
-                            let surf_origin = Point::from((px, py));
-                            return Some((popup.wl_surface().clone(), surf_origin));
-                        }
-                        // Remember the topmost popup as fallback so that when
-                        // the pointer is in the gap between the parent and popup
-                        // (e.g. GTK menu spacing), we keep focus on the popup
-                        // instead of the parent toplevel (which would dismiss it).
-                        if fallback_popup.is_none() {
-                            fallback_popup = Some((popup.wl_surface().clone(), Point::from((px, py))));
-                        }
-                    }
-                    // If popups exist but pointer isn't directly over one,
-                    // return the popup as focus to prevent dismissal during
-                    // gap traversal between menu button and popup.
-                    if let Some(fb) = fallback_popup {
-                        return Some(fb);
-                    }
-                }
-                // Hit-test: use actual geometry bounds if valid, otherwise content area
-                let hit = if geo.size.w > 0 && geo.size.h > 0 {
-                    let gx = (origin.x + geo.loc.x) as f64;
-                    let gy = (origin.y + geo.loc.y) as f64;
-                    pos.x >= gx && pos.y >= gy
-                        && pos.x < gx + geo.size.w as f64
-                        && pos.y < gy + geo.size.h as f64
-                } else {
-                    let area = state.window_area();
-                    pos.x >= area.loc.x as f64 && pos.y >= area.loc.y as f64
-                        && pos.x < (area.loc.x + area.size.w) as f64
-                        && pos.y < (area.loc.y + area.size.h) as f64
-                };
-                if hit {
-                    let surf_origin = Point::from((origin.x as f64, origin.y as f64));
-                    return mw.window.toplevel().map(|t| (t.wl_surface().clone(), surf_origin));
+                // Window geometry origin in screen coordinates
+                let geo_origin: Point<f64, Logical> = Point::from((
+                    (origin.x + geo.loc.x) as f64,
+                    (origin.y + geo.loc.y) as f64,
+                ));
+                // Point relative to window geometry origin, as expected
+                // by Window::surface_under
+                let point_in_window = Point::from((
+                    pos.x - geo_origin.x,
+                    pos.y - geo_origin.y,
+                ));
+                // Use smithay's surface_under which does proper input-region
+                // hit-testing for popups, subsurfaces, and the toplevel.
+                if let Some((surface, surface_loc)) = mw.window.surface_under(
+                    point_in_window,
+                    WindowSurfaceType::ALL,
+                ) {
+                    // surface_loc is the surface's offset relative to the
+                    // window geometry origin; convert to screen coordinates.
+                    let surf_origin = Point::from((
+                        geo_origin.x + surface_loc.x as f64,
+                        geo_origin.y + surface_loc.y as f64,
+                    ));
+                    return Some((surface, surf_origin));
                 }
             }
         }
