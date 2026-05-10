@@ -331,6 +331,7 @@ fn pointer_focus_surface(
 
                 if let Some(toplevel) = mw.window.toplevel() {
                     // Check popups first (front to back)
+                    let mut fallback_popup: Option<(smithay::reexports::wayland_server::protocol::wl_surface::WlSurface, Point<f64, Logical>)> = None;
                     for (popup, popup_offset) in PopupManager::popups_for_surface(toplevel.wl_surface()) {
                         let popup_geo = popup.geometry();
                         // Surface origin accounts for parent geo, popup offset,
@@ -349,6 +350,19 @@ fn pointer_focus_surface(
                             let surf_origin = Point::from((px, py));
                             return Some((popup.wl_surface().clone(), surf_origin));
                         }
+                        // Remember the topmost popup as fallback so that when
+                        // the pointer is in the gap between the parent and popup
+                        // (e.g. GTK menu spacing), we keep focus on the popup
+                        // instead of the parent toplevel (which would dismiss it).
+                        if fallback_popup.is_none() {
+                            fallback_popup = Some((popup.wl_surface().clone(), Point::from((px, py))));
+                        }
+                    }
+                    // If popups exist but pointer isn't directly over one,
+                    // return the popup as focus to prevent dismissal during
+                    // gap traversal between menu button and popup.
+                    if let Some(fb) = fallback_popup {
+                        return Some(fb);
                     }
                 }
                 // Hit-test: use actual geometry bounds if valid, otherwise content area
