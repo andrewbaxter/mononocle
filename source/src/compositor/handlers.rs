@@ -220,7 +220,23 @@ impl XdgShellHandler for State {
         self.popup_manager.track_popup(PopupKind::Xdg(surface)).ok();
     }
 
-    fn grab(&mut self, _surface: PopupSurface, _seat: wl_seat::WlSeat, _serial: Serial) { }
+    fn grab(&mut self, surface: PopupSurface, _seat: wl_seat::WlSeat, serial: Serial) {
+        use smithay::desktop::{PopupKeyboardGrab, PopupPointerGrab, find_popup_root_surface};
+
+        let popup = PopupKind::Xdg(surface);
+        if let Ok(root) = find_popup_root_surface(&popup) {
+            if let Ok(grab) = self.popup_manager.grab_popup::<State>(root, popup, &self.seat, serial) {
+                if let Some(kb) = self.seat.get_keyboard() {
+                    let kb_grab = PopupKeyboardGrab::new(&grab);
+                    kb.set_grab(self, kb_grab, serial);
+                }
+                if let Some(ptr) = self.seat.get_pointer() {
+                    let ptr_grab = PopupPointerGrab::new(&grab);
+                    ptr.set_grab(self, ptr_grab, serial, smithay::input::pointer::Focus::Keep);
+                }
+            }
+        }
+    }
 
     fn reposition_request(&mut self, surface: PopupSurface, _positioner: PositionerState, token: u32) {
         surface.send_repositioned(token);

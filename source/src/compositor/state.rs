@@ -732,6 +732,9 @@ impl State {
             if let Some(mw) = self.windows.iter().find(|w| w.id == id && w.window.alive()) {
                 if let Some(t) = mw.window.toplevel() {
                     send_to(t.wl_surface());
+                    for (popup, _) in PopupManager::popups_for_surface(t.wl_surface()) {
+                        send_to(popup.wl_surface());
+                    }
                 }
             }
         }
