@@ -221,25 +221,184 @@ impl XdgShellHandler for State {
     }
 
     fn grab(&mut self, surface: PopupSurface, _seat: wl_seat::WlSeat, serial: Serial) {
-        use smithay::desktop::{PopupKeyboardGrab, PopupPointerGrab, find_popup_root_surface};
+        use smithay::desktop::{PopupKeyboardGrab, find_popup_root_surface};
 
         let popup = PopupKind::Xdg(surface);
-        if let Ok(root) = find_popup_root_surface(&popup) {
-            if let Ok(grab) = self.popup_manager.grab_popup::<State>(root, popup, &self.seat, serial) {
-                if let Some(kb) = self.seat.get_keyboard() {
-                    let kb_grab = PopupKeyboardGrab::new(&grab);
-                    kb.set_grab(self, kb_grab, serial);
+        match find_popup_root_surface(&popup) {
+            Ok(root) => {
+                match self.popup_manager.grab_popup::<State>(root, popup, &self.seat, serial) {
+                    Ok(grab) => {
+                        if let Some(kb) = self.seat.get_keyboard() {
+                            let kb_grab = PopupKeyboardGrab::new(&grab);
+                            kb.set_grab(self, kb_grab, serial);
+                        }
+                        if let Some(ptr) = self.seat.get_pointer() {
+                            let ptr_grab = PopupPointerGrabSkipFirstRelease::new(&grab);
+                            ptr.set_grab(self, ptr_grab, serial, smithay::input::pointer::Focus::Keep);
+                        }
+                    }
+                    Err(err) => {
+                        tracing::warn!("Popup grab failed: {err}");
+                    }
                 }
-                if let Some(ptr) = self.seat.get_pointer() {
-                    let ptr_grab = PopupPointerGrab::new(&grab);
-                    ptr.set_grab(self, ptr_grab, serial, smithay::input::pointer::Focus::Keep);
-                }
+            }
+            Err(err) => {
+                tracing::warn!("find_popup_root_surface failed: {err}");
             }
         }
     }
 
     fn reposition_request(&mut self, surface: PopupSurface, _positioner: PositionerState, token: u32) {
         surface.send_repositioned(token);
+    }
+}
+
+/// Wraps [`PopupPointerGrab`] but skips forwarding the first button release
+/// to the client.  This works around toolkits (GTK) that dismiss the popup
+/// when they see the release of the button that opened the menu.
+struct PopupPointerGrabSkipFirstRelease {
+    inner: smithay::desktop::PopupPointerGrab<State>,
+    skip_next_release: bool,
+}
+
+impl PopupPointerGrabSkipFirstRelease {
+    fn new(grab: &smithay::desktop::PopupGrab<State>) -> Self {
+        Self {
+            inner: smithay::desktop::PopupPointerGrab::new(grab),
+            skip_next_release: true,
+        }
+    }
+}
+
+impl smithay::input::pointer::PointerGrab<State> for PopupPointerGrabSkipFirstRelease {
+    fn motion(
+        &mut self,
+        data: &mut State,
+        handle: &mut smithay::input::pointer::PointerInnerHandle<'_, State>,
+        focus: Option<(WlSurface, smithay::utils::Point<f64, smithay::utils::Logical>)>,
+        event: &smithay::input::pointer::MotionEvent,
+    ) {
+        self.inner.motion(data, handle, focus, event);
+    }
+
+    fn relative_motion(
+        &mut self,
+        data: &mut State,
+        handle: &mut smithay::input::pointer::PointerInnerHandle<'_, State>,
+        focus: Option<(WlSurface, smithay::utils::Point<f64, smithay::utils::Logical>)>,
+        event: &smithay::input::pointer::RelativeMotionEvent,
+    ) {
+        self.inner.relative_motion(data, handle, focus, event);
+    }
+
+    fn button(
+        &mut self,
+        data: &mut State,
+        handle: &mut smithay::input::pointer::PointerInnerHandle<'_, State>,
+        event: &smithay::input::pointer::ButtonEvent,
+    ) {
+        if self.skip_next_release && event.state == smithay::backend::input::ButtonState::Released {
+            self.skip_next_release = false;
+            return;
+        }
+        self.inner.button(data, handle, event);
+    }
+
+    fn axis(
+        &mut self,
+        data: &mut State,
+        handle: &mut smithay::input::pointer::PointerInnerHandle<'_, State>,
+        details: smithay::input::pointer::AxisFrame,
+    ) {
+        self.inner.axis(data, handle, details);
+    }
+
+    fn frame(
+        &mut self,
+        data: &mut State,
+        handle: &mut smithay::input::pointer::PointerInnerHandle<'_, State>,
+    ) {
+        self.inner.frame(data, handle);
+    }
+
+    fn gesture_swipe_begin(
+        &mut self,
+        data: &mut State,
+        handle: &mut smithay::input::pointer::PointerInnerHandle<'_, State>,
+        event: &smithay::input::pointer::GestureSwipeBeginEvent,
+    ) {
+        self.inner.gesture_swipe_begin(data, handle, event);
+    }
+
+    fn gesture_swipe_update(
+        &mut self,
+        data: &mut State,
+        handle: &mut smithay::input::pointer::PointerInnerHandle<'_, State>,
+        event: &smithay::input::pointer::GestureSwipeUpdateEvent,
+    ) {
+        self.inner.gesture_swipe_update(data, handle, event);
+    }
+
+    fn gesture_swipe_end(
+        &mut self,
+        data: &mut State,
+        handle: &mut smithay::input::pointer::PointerInnerHandle<'_, State>,
+        event: &smithay::input::pointer::GestureSwipeEndEvent,
+    ) {
+        self.inner.gesture_swipe_end(data, handle, event);
+    }
+
+    fn gesture_pinch_begin(
+        &mut self,
+        data: &mut State,
+        handle: &mut smithay::input::pointer::PointerInnerHandle<'_, State>,
+        event: &smithay::input::pointer::GesturePinchBeginEvent,
+    ) {
+        self.inner.gesture_pinch_begin(data, handle, event);
+    }
+
+    fn gesture_pinch_update(
+        &mut self,
+        data: &mut State,
+        handle: &mut smithay::input::pointer::PointerInnerHandle<'_, State>,
+        event: &smithay::input::pointer::GesturePinchUpdateEvent,
+    ) {
+        self.inner.gesture_pinch_update(data, handle, event);
+    }
+
+    fn gesture_pinch_end(
+        &mut self,
+        data: &mut State,
+        handle: &mut smithay::input::pointer::PointerInnerHandle<'_, State>,
+        event: &smithay::input::pointer::GesturePinchEndEvent,
+    ) {
+        self.inner.gesture_pinch_end(data, handle, event);
+    }
+
+    fn gesture_hold_begin(
+        &mut self,
+        data: &mut State,
+        handle: &mut smithay::input::pointer::PointerInnerHandle<'_, State>,
+        event: &smithay::input::pointer::GestureHoldBeginEvent,
+    ) {
+        self.inner.gesture_hold_begin(data, handle, event);
+    }
+
+    fn gesture_hold_end(
+        &mut self,
+        data: &mut State,
+        handle: &mut smithay::input::pointer::PointerInnerHandle<'_, State>,
+        event: &smithay::input::pointer::GestureHoldEndEvent,
+    ) {
+        self.inner.gesture_hold_end(data, handle, event);
+    }
+
+    fn start_data(&self) -> &smithay::input::pointer::GrabStartData<State> {
+        self.inner.start_data()
+    }
+
+    fn unset(&mut self, data: &mut State) {
+        self.inner.unset(data);
     }
 }
 

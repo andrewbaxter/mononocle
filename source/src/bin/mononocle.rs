@@ -324,7 +324,7 @@ fn pointer_focus_surface(
     state: &State,
     pos: Point<f64, Logical>,
 ) -> Option<(smithay::reexports::wayland_server::protocol::wl_surface::WlSurface, Point<f64, Logical>)> {
-    use smithay::desktop::{PopupManager, WindowSurfaceType};
+    use smithay::desktop::WindowSurfaceType;
     use smithay::utils::IsAlive;
 
     if let Some(origin) = state.current_window_surface_origin() {
@@ -343,42 +343,12 @@ fn pointer_focus_surface(
                     pos.y - origin_f.y,
                 ));
 
-                // Try popup surfaces first (proper input-region hit-testing)
+                // Hit-test all window surfaces: popups, subsurfaces, and toplevel.
+                // The PopupPointerGrab handles same-client focus correctly,
+                // so we don't need to force focus to popup surfaces.
                 if let Some((surface, surface_loc)) = mw.window.surface_under(
                     point_in_surface,
-                    WindowSurfaceType::POPUP | WindowSurfaceType::SUBSURFACE,
-                ) {
-                    let surf_origin = Point::from((
-                        origin_f.x + surface_loc.x as f64,
-                        origin_f.y + surface_loc.y as f64,
-                    ));
-                    return Some((surface, surf_origin));
-                }
-
-                // If popups exist but the pointer isn't over any of them,
-                // keep focus on the topmost popup to prevent GTK from
-                // dismissing the menu (e.g. pointer in gap between menu
-                // button and popup surface).
-                if let Some(toplevel) = mw.window.toplevel() {
-                    let geo = mw.window.geometry();
-                    for (popup, popup_offset) in PopupManager::popups_for_surface(toplevel.wl_surface()) {
-                        let popup_geo = popup.geometry();
-                        // Skip popups that haven't committed content yet
-                        if popup_geo.size.w == 0 || popup_geo.size.h == 0 {
-                            continue;
-                        }
-                        let surf_origin = Point::from((
-                            origin_f.x + geo.loc.x as f64 + popup_offset.x as f64 - popup_geo.loc.x as f64,
-                            origin_f.y + geo.loc.y as f64 + popup_offset.y as f64 - popup_geo.loc.y as f64,
-                        ));
-                        return Some((popup.wl_surface().clone(), surf_origin));
-                    }
-                }
-
-                // No popups — hit-test the toplevel
-                if let Some((surface, surface_loc)) = mw.window.surface_under(
-                    point_in_surface,
-                    WindowSurfaceType::TOPLEVEL | WindowSurfaceType::SUBSURFACE,
+                    WindowSurfaceType::ALL,
                 ) {
                     let surf_origin = Point::from((
                         origin_f.x + surface_loc.x as f64,
