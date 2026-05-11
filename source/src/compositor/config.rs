@@ -103,6 +103,9 @@ pub struct Config {
     /// start to count as real activity (avoids jitter waking the screen). Default: 5.
     #[serde(default = "default_mouse_jitter_threshold")]
     pub mouse_jitter_threshold: f64,
+    /// Seconds of mouse inactivity before the cursor is hidden. None = disabled.
+    #[serde(default)]
+    pub cursor_hide_timeout_secs: Option<f64>,
     /// Whether fullscreen windows automatically hold (inhibit) screen blank/off.
     /// Default: true.
     #[serde(default = "default_fullscreen_holds_idle")]
@@ -159,6 +162,7 @@ impl Default for Config {
             screen_blank_timeout_secs: None,
             display_off_timeout_secs: None,
             mouse_jitter_threshold: default_mouse_jitter_threshold(),
+            cursor_hide_timeout_secs: None,
             fullscreen_holds_idle: default_fullscreen_holds_idle(),
         }
     }

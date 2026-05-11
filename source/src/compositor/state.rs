@@ -244,8 +244,10 @@ pub struct State {
     pub ipc_rx: std::sync::mpsc::Receiver<IpcCommand>,
     // --- Idle / screen power ---
     pub last_activity: Instant,
+    pub last_mouse_activity: Instant,
     pub activity_mouse_pos: Point<f64, Logical>,
     pub screen_power_state: ScreenPowerState,
+    pub cursor_visible: bool,
     /// Surfaces with active zwp_idle_inhibitor_v1 objects.
     pub idle_inhibit_surfaces: HashSet<WlSurface>,
     // --- Misc ---
@@ -313,8 +315,10 @@ impl State {
             ipc_shared,
             ipc_rx,
             last_activity: now,
+            last_mouse_activity: now,
             activity_mouse_pos: Point::from((0.0, 0.0)),
             screen_power_state: ScreenPowerState::Active,
+            cursor_visible: true,
             idle_inhibit_surfaces: HashSet::new(),
             config,
             compiled_rules,
@@ -342,6 +346,11 @@ impl State {
         let dist = (dx * dx + dy * dy).sqrt();
         if dist >= self.config.mouse_jitter_threshold {
             self.activity_mouse_pos = pos;
+            self.last_mouse_activity = Instant::now();
+            if !self.cursor_visible {
+                self.cursor_visible = true;
+                tracing::debug!("Cursor shown (mouse moved)");
+            }
             self.record_activity();
             true
         } else {
@@ -379,6 +388,14 @@ impl State {
     /// Check idle timeouts and transition screen power state.
     /// Called once per frame in the main loop.
     pub fn check_idle_timeouts(&mut self) {
+        // Cursor hide uses mouse-only idle time and is independent of idle hold.
+        if let Some(cursor_secs) = self.config.cursor_hide_timeout_secs {
+            if self.cursor_visible && self.last_mouse_activity.elapsed() >= Duration::from_secs_f64(cursor_secs) {
+                self.cursor_visible = false;
+                tracing::debug!("Cursor hidden after {cursor_secs}s mouse idle");
+            }
+        }
+
         if self.is_idle_held() {
             return;
         }
@@ -390,6 +407,7 @@ impl State {
             if elapsed >= Duration::from_secs_f64(off_secs) {
                 if self.screen_power_state != ScreenPowerState::Off {
                     self.screen_power_state = ScreenPowerState::Off;
+                    self.cursor_visible = false;
                     tracing::debug!("Display off after {off_secs}s idle");
                 }
                 return;
@@ -401,6 +419,7 @@ impl State {
             if elapsed >= Duration::from_secs_f64(blank_secs) {
                 if self.screen_power_state == ScreenPowerState::Active {
                     self.screen_power_state = ScreenPowerState::Blanked;
+                    self.cursor_visible = false;
                     tracing::debug!("Screen blanked after {blank_secs}s idle");
                 }
                 return;

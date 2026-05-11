@@ -162,6 +162,7 @@ fn run(config: Config) -> Result<(), Box<dyn std::error::Error>> {
     }
 
     let mut clients = Vec::new();
+    let mut prev_cursor_visible = true;
     loop {
         let status = winit_loop.dispatch_new_events(|event| match event {
             WinitEvent::Resized { size, .. } => {
@@ -207,6 +208,10 @@ fn run(config: Config) -> Result<(), Box<dyn std::error::Error>> {
         state.popup_manager.cleanup();
         state.process_pending();
         state.check_idle_timeouts();
+        if state.cursor_visible != prev_cursor_visible {
+            prev_cursor_visible = state.cursor_visible;
+            backend.window().set_cursor_visible(state.cursor_visible);
+        }
         if let Ok(Some(stream)) = listener.accept() {
             if let Ok(client) = display.handle().insert_client(stream, Arc::new(ClientState::default())) {
                 clients.push(client);
@@ -322,6 +327,9 @@ fn handle_input(state: &mut State, event: InputEvent<WinitInput>) {
         },
         InputEvent::PointerButton { event } => {
             state.record_activity();
+            if !state.cursor_visible {
+                state.cursor_visible = true;
+            }
             if let Some(ptr) = state.seat.get_pointer() {
                 ptr.button(state, &ButtonEvent {
                     button: event.button_code(),
