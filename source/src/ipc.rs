@@ -50,12 +50,20 @@ pub struct ListWindows;
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct Watch;
 
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct SetDesktopArgs {
+    /// Desktop number to associate with the caller's PID tree.
+    /// If None, uses the compositor's current desktop.
+    pub desktop: Option<u32>,
+}
+
 glove::reqresp!(pub protocol {
     ListWindows(ListWindows) => Vec < WindowInfo >,
     ShowDesktop(u32) =>(),
     ShowWindow(u64) =>(),
     KillWindow(KillWindowArgs) =>(),
     ToggleFullscreen(ToggleFullscreenArgs) =>(),
+    SetDesktop(SetDesktopArgs) =>(),
     Watch(Watch) => Vec < WindowEvent >,
 });
 

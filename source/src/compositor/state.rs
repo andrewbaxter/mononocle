@@ -67,6 +67,7 @@ use {
             wayland_server::{
                 Display,
                 DisplayHandle,
+                Resource,
                 backend::{
                     ClientData,
                     ClientId,
@@ -107,7 +108,10 @@ use {
         },
     },
     std::{
-        collections::HashSet,
+        collections::{
+            HashMap,
+            HashSet,
+        },
         sync::{
             Arc,
             Mutex,
@@ -249,6 +253,9 @@ pub struct State {
     pub current_window_id: Option<u64>,
     pub current_desktop: u32,
     pub layer_surfaces: Vec<DesktopLayerSurface>,
+    /// Maps PID -> desktop number. Used to place new windows on the desktop
+    /// of their parent process.
+    pub pid_desktop: HashMap<u32, u32>,
     // --- Background texture + original image dimensions (width, height) ---
     pub background_buffer: Option<(TextureBuffer<GlesTexture>, (u32, u32))>,
     // --- Rounded rect shader for decorations ---
@@ -338,6 +345,7 @@ impl State {
             current_window_id: None,
             current_desktop: 0,
             layer_surfaces: Vec::new(),
+            pid_desktop: HashMap::new(),
             background_buffer: None,
             rounded_rect_shader: None,
             lock_shader: None,
@@ -673,6 +681,7 @@ impl State {
                 }
             }
         }
+        self.associate_current_window_pid();
         self.push_event(WindowEvent::ShownWindowChanged { window_id: Some(id) });
         self.push_event(WindowEvent::ShownDesktopChanged { desktop: self.current_desktop });
     }
@@ -711,6 +720,7 @@ impl State {
                 }
             }
         }
+        self.associate_current_window_pid();
         self.push_event(WindowEvent::ShownDesktopChanged { desktop });
         self.push_event(WindowEvent::ShownWindowChanged { window_id: first });
     }
@@ -780,6 +790,10 @@ impl State {
                     self.toggle_fullscreen(id);
                     self.record_activity();
                 },
+                IpcCommand::SetDesktop { pid, desktop } => {
+                    let d = desktop.unwrap_or(self.current_desktop);
+                    self.associate_pid_tree_with_desktop(pid, d);
+                },
             }
         }
     }
@@ -836,6 +850,46 @@ impl State {
         shared.windows = windows;
         shared.current_window_id = self.current_window_id;
         shared.current_desktop = self.current_desktop;
+    }
+
+    /// Associate the currently focused window's PID tree with its desktop.
+    pub fn associate_current_window_pid(&mut self) {
+        let Some(id) = self.current_window_id else { return };
+        let desktop = self.current_desktop;
+        let pid = self.windows.iter()
+            .find(|w| w.id == id && w.window.alive())
+            .and_then(|mw| mw.window.toplevel())
+            .and_then(|t| self.pid_for_surface(t.wl_surface()));
+        if let Some(pid) = pid {
+            self.associate_pid_tree_with_desktop(pid, desktop);
+        }
+    }
+
+    /// Associate a PID and all its ancestors with the given desktop.
+    pub fn associate_pid_tree_with_desktop(&mut self, pid: u32, desktop: u32) {
+        for ancestor in pid_ancestors(pid) {
+            self.pid_desktop.insert(ancestor, desktop);
+        }
+    }
+
+    /// Walk a PID's parent chain and return the desktop of the first ancestor
+    /// that has a known desktop association.
+    pub fn desktop_for_pid(&self, pid: u32) -> Option<u32> {
+        for ancestor in pid_ancestors(pid) {
+            if let Some(&desktop) = self.pid_desktop.get(&ancestor) {
+                return Some(desktop);
+            }
+        }
+        None
+    }
+
+    /// Get the PID of the client that owns a wayland surface.
+    pub fn pid_for_surface(&self, surface: &WlSurface) -> Option<u32> {
+        let handle = surface.handle().upgrade()?;
+        let dh = DisplayHandle::from(handle);
+        let client = dh.get_client(surface.id()).ok()?;
+        let creds = client.get_credentials(&dh).ok()?;
+        Some(creds.pid as u32)
     }
 
     pub fn render_lock_elements(&self) -> Vec<CompElement> {
@@ -1290,3 +1344,44 @@ void main() {
     gl_FragColor = vec4(u_color.rgb * a, a);
 }
 "#;
+
+// ---------------------------------------------------------------------------
+// Helper: iterate PID and its ancestors via /proc/<pid>/status
+// ---------------------------------------------------------------------------
+
+/// Returns an iterator yielding `pid` itself, then its parent, grandparent, etc.
+/// Stops when it reaches PID 1 or can't read /proc.
+pub fn pid_ancestors(pid: u32) -> PidAncestors {
+    PidAncestors { next: Some(pid) }
+}
+
+pub struct PidAncestors {
+    next: Option<u32>,
+}
+
+impl Iterator for PidAncestors {
+    type Item = u32;
+    fn next(&mut self) -> Option<u32> {
+        let pid = self.next?;
+        if pid == 0 {
+            self.next = None;
+            return None;
+        }
+        self.next = if pid <= 1 {
+            None
+        } else {
+            parent_pid(pid)
+        };
+        Some(pid)
+    }
+}
+
+fn parent_pid(pid: u32) -> Option<u32> {
+    let status = std::fs::read_to_string(format!("/proc/{pid}/status")).ok()?;
+    for line in status.lines() {
+        if let Some(rest) = line.strip_prefix("PPid:") {
+            return rest.trim().parse().ok();
+        }
+    }
+    None
+}

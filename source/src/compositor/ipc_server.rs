@@ -40,6 +40,7 @@ pub enum IpcCommand {
     ShowWindow(u64),
     KillWindow(Option<u64>),
     ToggleFullscreen(Option<u64>),
+    SetDesktop { pid: u32, desktop: Option<u32> },
 }
 
 /// Spawns the IPC server in a dedicated thread with its own Tokio runtime.
@@ -75,10 +76,11 @@ async fn run_server(
                 continue;
             },
         };
+        let peer_pid = conn.0.peer_cred().ok().map(|c| c.pid().unwrap_or(0) as u32);
         let shared = shared.clone();
         let cmd_tx = cmd_tx.clone();
         tokio::spawn(async move {
-            handle_connection(conn, shared, cmd_tx).await;
+            handle_connection(conn, shared, cmd_tx, peer_pid).await;
         });
     }
 }
@@ -87,6 +89,7 @@ async fn handle_connection(
     mut conn: protocol::ServerConn,
     shared: Arc<Mutex<SharedIpcState>>,
     cmd_tx: std::sync::mpsc::Sender<IpcCommand>,
+    peer_pid: Option<u32>,
 ) {
     // Broadcast receiver, set up on first Watch call.
     let mut event_rx: Option<broadcast::Receiver<WindowEvent>> = None;
@@ -118,6 +121,12 @@ async fn handle_connection(
             },
             protocol::ServerReq::ToggleFullscreen(respond, args) => {
                 cmd_tx.send(IpcCommand::ToggleFullscreen(args.id)).ok();
+                respond(())
+            },
+            protocol::ServerReq::SetDesktop(respond, args) => {
+                if let Some(pid) = peer_pid {
+                    cmd_tx.send(IpcCommand::SetDesktop { pid, desktop: args.desktop }).ok();
+                }
                 respond(())
             },
             protocol::ServerReq::Watch(respond, _) => {

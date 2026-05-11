@@ -140,7 +140,13 @@ impl XdgShellHandler for State {
     fn new_toplevel(&mut self, surface: ToplevelSurface) {
         let id = next_window_id();
         let window = Window::new_wayland_window(surface.clone());
-        let desktop = self.current_desktop;
+        // Determine desktop: walk the client PID's parent chain to find an
+        // ancestor already associated with a desktop (e.g. the terminal that
+        // launched this app). Fall back to the current desktop.
+        let client_pid = self.pid_for_surface(surface.wl_surface());
+        let desktop = client_pid
+            .and_then(|pid| self.desktop_for_pid(pid))
+            .unwrap_or(self.current_desktop);
         // Try to read title/app_id already sent by the client before the
         // initial commit, so window rules are applied correctly from the start.
         let title = with_states(surface.wl_surface(), |states| {
@@ -191,6 +197,9 @@ impl XdgShellHandler for State {
             None
         });
         self.windows.push(managed);
+        if let Some(pid) = client_pid {
+            self.associate_pid_tree_with_desktop(pid, desktop);
+        }
         if is_first_visible {
             self.current_window_id = Some(id);
             if let Some(mw) = self.windows.iter().find(|w| w.id == id) {
