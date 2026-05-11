@@ -13,6 +13,7 @@ use {
             state::{
                 ClientState,
                 LockInputState,
+                LOCK_SHADER,
                 ROUNDED_RECT_SHADER,
                 ScreenPowerState,
                 State,
@@ -166,6 +167,10 @@ fn run(config: Config) -> Result<(), Box<dyn std::error::Error>> {
             Ok(prog) => state.rounded_rect_shader = Some(prog),
             Err(e) => tracing::warn!("Failed to compile rounded-rect shader: {e}"),
         }
+        match compile_lock_shader(renderer) {
+            Ok(prog) => state.lock_shader = Some(prog),
+            Err(e) => tracing::warn!("Failed to compile lock shader: {e}"),
+        }
     }
 
     let mut clients = Vec::new();
@@ -311,6 +316,20 @@ fn compile_rounded_rect_shader(
         &[
             UniformName::new("u_color", UniformType::_4f),
             UniformName::new("u_radius", UniformType::_1f),
+        ],
+    )?;
+    Ok(prog)
+}
+
+fn compile_lock_shader(
+    renderer: &mut GlesRenderer,
+) -> Result<smithay::backend::renderer::gles::GlesPixelProgram, Box<dyn std::error::Error>> {
+    let prog = renderer.compile_custom_pixel_shader(
+        LOCK_SHADER,
+        &[
+            UniformName::new("u_color", UniformType::_4f),
+            UniformName::new("u_line_width", UniformType::_1f),
+            UniformName::new("u_pad", UniformType::_1f),
         ],
     )?;
     Ok(prog)

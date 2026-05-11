@@ -253,6 +253,7 @@ pub struct State {
     pub background_buffer: Option<(TextureBuffer<GlesTexture>, (u32, u32))>,
     // --- Rounded rect shader for decorations ---
     pub rounded_rect_shader: Option<GlesPixelProgram>,
+    pub lock_shader: Option<GlesPixelProgram>,
     // --- IPC ---
     pub ipc_shared: Arc<Mutex<SharedIpcState>>,
     pub ipc_rx: std::sync::mpsc::Receiver<IpcCommand>,
@@ -339,6 +340,7 @@ impl State {
             layer_surfaces: Vec::new(),
             background_buffer: None,
             rounded_rect_shader: None,
+            lock_shader: None,
             ipc_shared,
             ipc_rx,
             last_activity: now,
@@ -839,20 +841,13 @@ impl State {
     pub fn render_lock_elements(&self) -> Vec<CompElement> {
         let mut elements: Vec<CompElement> = Vec::new();
 
-        // Hide circle if backspace-dismissed.
+        // Hide icon if backspace-dismissed.
         if let Some(until) = self.lock_circle_hidden_until {
             if Instant::now() < until {
                 return elements;
             }
         }
 
-        let cx = self.output_size.w / 2;
-        let cy = self.output_size.h / 2;
-        let radius = 40;
-        let circle_rect = Rectangle::new(
-            Point::from((cx - radius, cy - radius)),
-            Size::from((radius * 2, radius * 2)),
-        );
         let color = match self.lock_input_state {
             LockInputState::Failed => [1.0, 0.3, 0.3, 1.0],
             _ => {
@@ -864,13 +859,36 @@ impl State {
                 }
             },
         };
-        push_colored_rect(
-            &mut elements,
-            circle_rect,
-            color,
-            radius as f32,
-            self.rounded_rect_shader.as_ref(),
+
+        // Lock icon sized to 1/20 of screen height, aspect ratio from lock.svg.
+        const ASPECT: f32 = 33.943172 / 44.452019;
+        let icon_h = self.output_size.h as f32 / 20.0;
+        let icon_w = icon_h * ASPECT;
+        let pad = 4; // padding to avoid clipping the outline
+        let elem_w = icon_w as i32 + pad * 2;
+        let elem_h = icon_h as i32 + pad * 2;
+        let cx = self.output_size.w / 2;
+        let cy = self.output_size.h / 2;
+        let lock_rect = Rectangle::new(
+            Point::from((cx - elem_w / 2, cy - elem_h / 2)),
+            Size::from((elem_w, elem_h)),
         );
+
+        if let Some(prog) = self.lock_shader.as_ref() {
+            let elem = PixelShaderElement::new(
+                prog.clone(),
+                lock_rect,
+                None,
+                1.0,
+                vec![
+                    Uniform::new("u_color", UniformValue::_4f(color[0], color[1], color[2], color[3])),
+                    Uniform::new("u_line_width", UniformValue::_1f(3.0)),
+                    Uniform::new("u_pad", UniformValue::_1f(pad as f32)),
+                ],
+                Kind::Unspecified,
+            );
+            elements.push(CompElement::PixelShader(elem));
+        }
         elements
     }
 
@@ -1219,6 +1237,55 @@ void main() {
     float r = min(u_radius, min(half_size.x, half_size.y));
     float d = roundedBoxSDF(pixel_pos - half_size, half_size, r);
     float shape_alpha = 1.0 - smoothstep(-0.5, 0.5, d);
+    float a = u_color.a * alpha * shape_alpha;
+    gl_FragColor = vec4(u_color.rgb * a, a);
+}
+"#;
+
+// ---------------------------------------------------------------------------
+// Fragment shader for lock icon on the lock screen.
+// Renders the outline of the union of a filled rounded-rect (body)
+// and a ring (shackle outline) using signed distance functions.
+// Proportions derived from lock.svg (viewBox 33.943172 x 44.452019).
+// ---------------------------------------------------------------------------
+
+pub const LOCK_SHADER: &str = r#"
+precision mediump float;
+varying vec2 v_coords;
+uniform vec2 size;
+uniform float alpha;
+uniform vec4 u_color;
+uniform float u_line_width;
+uniform float u_pad;
+
+float roundedBoxSDF(vec2 p, vec2 b, float r) {
+    vec2 q = abs(p) - b + r;
+    return length(max(q, 0.0)) + min(max(q.x, q.y), 0.0) - r;
+}
+
+void main() {
+    // Icon area within the padded element.
+    vec2 icon_size = size - 2.0 * u_pad;
+    vec2 pixel = v_coords * size - u_pad;
+
+    // Body: filled rounded rectangle (bottom part of the lock).
+    // SVG-derived normalized positions relative to icon_size.
+    vec2 body_center = vec2(icon_size.x * 0.5, icon_size.y * 0.6858);
+    vec2 body_half = vec2(icon_size.x * 0.4938, icon_size.y * 0.3096);
+    float body_r = min(icon_size.y * 0.1499, min(body_half.x, body_half.y));
+    float body_d = roundedBoxSDF(pixel - body_center, body_half, body_r);
+
+    // Shackle: ring (outline of a rounded rectangle, top part).
+    vec2 shackle_center = vec2(icon_size.x * 0.5, icon_size.y * 0.3093);
+    vec2 shackle_half = vec2(icon_size.x * 0.2293, icon_size.y * 0.2573);
+    float shackle_r = min(icon_size.y * 0.1751, min(shackle_half.x, shackle_half.y));
+    float shackle_stroke_half = icon_size.y * 0.052;
+    float shackle_d = abs(roundedBoxSDF(pixel - shackle_center, shackle_half, shackle_r)) - shackle_stroke_half;
+
+    // Union of body and shackle ring, then take outline.
+    float union_d = min(body_d, shackle_d);
+    float outline_d = abs(union_d) - u_line_width * 0.5;
+    float shape_alpha = 1.0 - smoothstep(-0.5, 0.5, outline_d);
     float a = u_color.a * alpha * shape_alpha;
     gl_FragColor = vec4(u_color.rgb * a, a);
 }
