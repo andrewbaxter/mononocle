@@ -17,6 +17,19 @@ pub enum BackgroundSize {
     MinCover,
 }
 
+/// Controls whether a window holds (inhibits) screen blank/off.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum IdleHoldPolicy {
+    /// The window controls its own hold via the wayland idle-inhibit protocol.
+    #[default]
+    Default,
+    /// Always hold (prevent blank/off) when this window is current.
+    ForceHold,
+    /// Never hold, even if the window requests it.
+    BlockHold,
+}
+
 /// A window rule that overrides decoration parameters for matching windows.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WindowRule {
@@ -38,6 +51,8 @@ pub struct WindowRule {
     pub border_color: Option<[f32; 4]>,
     /// Start the window in fullscreen mode (no padding/border/decorations).
     pub fullscreen: Option<bool>,
+    /// Override idle hold policy for this window.
+    pub idle_hold: Option<IdleHoldPolicy>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -77,6 +92,21 @@ pub struct Config {
     /// Number of virtual desktops.
     #[serde(default = "default_desktops")]
     pub desktops: u32,
+    /// Seconds of inactivity before the screen blanks (renders black). None = disabled.
+    #[serde(default)]
+    pub screen_blank_timeout_secs: Option<f64>,
+    /// Seconds of inactivity before the display turns off. Must be >= screen_blank_timeout_secs
+    /// when both are set. None = disabled.
+    #[serde(default)]
+    pub display_off_timeout_secs: Option<f64>,
+    /// Minimum mouse movement distance (in logical pixels) from the position at idle
+    /// start to count as real activity (avoids jitter waking the screen). Default: 5.
+    #[serde(default = "default_mouse_jitter_threshold")]
+    pub mouse_jitter_threshold: f64,
+    /// Whether fullscreen windows automatically hold (inhibit) screen blank/off.
+    /// Default: true.
+    #[serde(default = "default_fullscreen_holds_idle")]
+    pub fullscreen_holds_idle: bool,
 }
 
 fn default_background_align() -> [f64; 2] {
@@ -103,6 +133,14 @@ fn default_desktops() -> u32 {
     4
 }
 
+fn default_mouse_jitter_threshold() -> f64 {
+    5.0
+}
+
+fn default_fullscreen_holds_idle() -> bool {
+    true
+}
+
 impl Default for Config {
     fn default() -> Self {
         Self {
@@ -118,6 +156,23 @@ impl Default for Config {
             window_rules: Vec::new(),
             socket: default_socket(),
             desktops: default_desktops(),
+            screen_blank_timeout_secs: None,
+            display_off_timeout_secs: None,
+            mouse_jitter_threshold: default_mouse_jitter_threshold(),
+            fullscreen_holds_idle: default_fullscreen_holds_idle(),
         }
+    }
+}
+
+impl Config {
+    pub fn validate(&self) -> Result<(), String> {
+        if let (Some(blank), Some(off)) = (self.screen_blank_timeout_secs, self.display_off_timeout_secs) {
+            if off < blank {
+                return Err(format!(
+                    "display_off_timeout_secs ({off}) must be >= screen_blank_timeout_secs ({blank})"
+                ));
+            }
+        }
+        Ok(())
     }
 }

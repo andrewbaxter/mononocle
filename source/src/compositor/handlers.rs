@@ -11,6 +11,7 @@ use {
     smithay::{
         delegate_compositor,
         delegate_data_device,
+        delegate_idle_inhibit,
         delegate_layer_shell,
         delegate_output,
         delegate_seat,
@@ -480,3 +481,16 @@ delegate_data_device!(State);
 impl OutputHandler for State { }
 
 delegate_output!(State);
+
+// --- IdleInhibitHandler ---
+impl smithay::wayland::idle_inhibit::IdleInhibitHandler for State {
+    fn inhibit(&mut self, surface: WlSurface) {
+        self.idle_inhibit_surfaces.insert(surface);
+    }
+
+    fn uninhibit(&mut self, surface: WlSurface) {
+        self.idle_inhibit_surfaces.remove(&surface);
+    }
+}
+
+delegate_idle_inhibit!(State);

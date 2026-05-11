@@ -12,6 +12,7 @@ use {
         state::{
             ClientState,
             ROUNDED_RECT_SHADER,
+            ScreenPowerState,
             State,
         },
     },
@@ -63,7 +64,6 @@ use {
         },
     },
     std::{
-        error::Error as _,
         path::PathBuf,
         sync::Arc,
     },
@@ -93,6 +93,10 @@ fn main() {
     } else {
         Config::default()
     };
+    if let Err(e) = config.validate() {
+        eprintln!("Config validation failed: {e}");
+        std::process::exit(1);
+    }
     if args.validate.is_some() {
         if let Some(bg) = &config.background {
             if !bg.exists() {
@@ -202,6 +206,7 @@ fn run(config: Config) -> Result<(), Box<dyn std::error::Error>> {
         display.flush_clients()?;
         state.popup_manager.cleanup();
         state.process_pending();
+        state.check_idle_timeouts();
         if let Ok(Some(stream)) = listener.accept() {
             if let Ok(client) = display.handle().insert_client(stream, Arc::new(ClientState::default())) {
                 clients.push(client);
@@ -219,13 +224,22 @@ fn render_frame(
     let damage = Rectangle::from_size(size);
     let time_ms = state.start_time.elapsed().as_millis() as u32;
     {
+        let is_active = state.screen_power_state == ScreenPowerState::Active;
         let (renderer, mut framebuffer) = backend.bind()?;
-        let elements = state.render_elements(renderer);
+        let elements = if is_active {
+            state.render_elements(renderer)
+        } else {
+            Vec::new()
+        };
         let mut frame = renderer.render(&mut framebuffer, size, Transform::Flipped180)?;
-        frame.clear(Color32F::new(0.05, 0.05, 0.05, 1.0), &[damage])?;
-        let _ = draw_render_elements::<GlesRenderer, _, _>(&mut frame, 1.0, &elements, &[damage]);
+        frame.clear(Color32F::new(0.0, 0.0, 0.0, 1.0), &[damage])?;
+        if is_active {
+            let _ = draw_render_elements::<GlesRenderer, _, _>(&mut frame, 1.0, &elements, &[damage]);
+        }
         let _ = frame.finish()?;
-        state.send_frames(time_ms);
+        if is_active {
+            state.send_frames(time_ms);
+        }
     }
     backend.submit(Some(&[damage]))?;
     Ok(())
@@ -281,6 +295,7 @@ fn compile_rounded_rect_shader(
 fn handle_input(state: &mut State, event: InputEvent<WinitInput>) {
     match event {
         InputEvent::Keyboard { event } => {
+            state.record_activity();
             if let Some(kb) = state.seat.get_keyboard() {
                 kb.input::<(), _>(
                     state,
@@ -294,6 +309,7 @@ fn handle_input(state: &mut State, event: InputEvent<WinitInput>) {
         },
         InputEvent::PointerMotionAbsolute { event } => {
             let pos = event.position_transformed(state.output_size);
+            state.record_mouse_activity(pos);
             let focus = pointer_focus_surface(state, pos);
             if let Some(ptr) = state.seat.get_pointer() {
                 ptr.motion(state, focus, &MotionEvent {
@@ -305,6 +321,7 @@ fn handle_input(state: &mut State, event: InputEvent<WinitInput>) {
             }
         },
         InputEvent::PointerButton { event } => {
+            state.record_activity();
             if let Some(ptr) = state.seat.get_pointer() {
                 ptr.button(state, &ButtonEvent {
                     button: event.button_code(),

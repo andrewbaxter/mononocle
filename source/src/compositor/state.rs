@@ -4,6 +4,7 @@ use {
             config::{
                 BackgroundSize,
                 Config,
+                IdleHoldPolicy,
                 WindowRule,
             },
             ipc_server::{
@@ -89,6 +90,7 @@ use {
                 CompositorState,
                 with_states,
             },
+            idle_inhibit::IdleInhibitManagerState,
             output::OutputManagerState,
             selection::data_device::DataDeviceState,
             shell::{
@@ -105,11 +107,15 @@ use {
         },
     },
     std::{
+        collections::HashSet,
         sync::{
             Arc,
             Mutex,
         },
-        time::Instant,
+        time::{
+            Duration,
+            Instant,
+        },
     },
 };
 
@@ -125,6 +131,14 @@ static NEXT_WINDOW_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU
 
 pub fn next_window_id() -> u64 {
     NEXT_WINDOW_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+}
+
+/// Current screen power state.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ScreenPowerState {
+    Active,
+    Blanked,
+    Off,
 }
 
 pub struct ManagedWindow {
@@ -190,6 +204,7 @@ pub struct EffectiveWindowParams {
     pub border_thickness: i32,
     pub border_color: [f32; 4],
     pub fullscreen: bool,
+    pub idle_hold: IdleHoldPolicy,
 }
 
 /// A compiled window rule with pre-built regexes.
@@ -208,6 +223,7 @@ pub struct State {
     pub output_manager_state: OutputManagerState,
     pub seat_state: SeatState<Self>,
     pub data_device_state: DataDeviceState,
+    pub idle_inhibit_state: IdleInhibitManagerState,
     pub seat: Seat<Self>,
     pub popup_manager: PopupManager,
     // --- Output ---
@@ -226,6 +242,12 @@ pub struct State {
     // --- IPC ---
     pub ipc_shared: Arc<Mutex<SharedIpcState>>,
     pub ipc_rx: std::sync::mpsc::Receiver<IpcCommand>,
+    // --- Idle / screen power ---
+    pub last_activity: Instant,
+    pub activity_mouse_pos: Point<f64, Logical>,
+    pub screen_power_state: ScreenPowerState,
+    /// Surfaces with active zwp_idle_inhibitor_v1 objects.
+    pub idle_inhibit_surfaces: HashSet<WlSurface>,
     // --- Misc ---
     pub config: Config,
     compiled_rules: Vec<CompiledRule>,
@@ -250,6 +272,7 @@ impl State {
         let mut seat_state = SeatState::new();
         let seat = seat_state.new_wl_seat(&dh, "seat0");
         let data_device_state = DataDeviceState::new::<Self>(&dh);
+        let idle_inhibit_state = IdleInhibitManagerState::new::<Self>(&dh);
         let output = Output::new("mononocle".into(), PhysicalProperties {
             size: (0, 0).into(),
             subpixel: Subpixel::Unknown,
@@ -266,6 +289,7 @@ impl State {
         output.create_global::<Self>(&dh);
 
         let compiled_rules = compile_rules(&config.window_rules);
+        let now = Instant::now();
 
         Self {
             compositor_state,
@@ -275,6 +299,7 @@ impl State {
             output_manager_state,
             seat_state,
             data_device_state,
+            idle_inhibit_state,
             seat,
             popup_manager: PopupManager::default(),
             output,
@@ -287,12 +312,103 @@ impl State {
             rounded_rect_shader: None,
             ipc_shared,
             ipc_rx,
+            last_activity: now,
+            activity_mouse_pos: Point::from((0.0, 0.0)),
+            screen_power_state: ScreenPowerState::Active,
+            idle_inhibit_surfaces: HashSet::new(),
             config,
             compiled_rules,
             display_handle: dh,
-            start_time: Instant::now(),
+            start_time: now,
         }
     }
+
+    // --- Idle / screen power ---
+
+    /// Record user activity, resetting idle timers and waking the screen.
+    pub fn record_activity(&mut self) {
+        self.last_activity = Instant::now();
+        if self.screen_power_state != ScreenPowerState::Active {
+            self.screen_power_state = ScreenPowerState::Active;
+            tracing::debug!("Screen woke up");
+        }
+    }
+
+    /// Record mouse-based activity, applying the jitter threshold.
+    /// Returns true if this counted as real activity.
+    pub fn record_mouse_activity(&mut self, pos: Point<f64, Logical>) -> bool {
+        let dx = pos.x - self.activity_mouse_pos.x;
+        let dy = pos.y - self.activity_mouse_pos.y;
+        let dist = (dx * dx + dy * dy).sqrt();
+        if dist >= self.config.mouse_jitter_threshold {
+            self.activity_mouse_pos = pos;
+            self.record_activity();
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Check whether the current window effectively holds (inhibits) idle.
+    pub fn is_idle_held(&self) -> bool {
+        let Some(id) = self.current_window_id else { return false };
+        let Some(mw) = self.windows.iter().find(|w| w.id == id && w.window.alive()) else { return false };
+        let params = self.effective_window_params_for(mw);
+
+        match params.idle_hold {
+            IdleHoldPolicy::ForceHold => return true,
+            IdleHoldPolicy::BlockHold => return false,
+            IdleHoldPolicy::Default => {},
+        }
+
+        // Check fullscreen hold.
+        if self.config.fullscreen_holds_idle && params.fullscreen {
+            return true;
+        }
+
+        // Check wayland idle-inhibit protocol.
+        if let Some(t) = mw.window.toplevel() {
+            if self.idle_inhibit_surfaces.contains(t.wl_surface()) {
+                return true;
+            }
+        }
+
+        false
+    }
+
+    /// Check idle timeouts and transition screen power state.
+    /// Called once per frame in the main loop.
+    pub fn check_idle_timeouts(&mut self) {
+        if self.is_idle_held() {
+            return;
+        }
+
+        let elapsed = self.last_activity.elapsed();
+
+        // Check display-off timeout first (it's the longer one).
+        if let Some(off_secs) = self.config.display_off_timeout_secs {
+            if elapsed >= Duration::from_secs_f64(off_secs) {
+                if self.screen_power_state != ScreenPowerState::Off {
+                    self.screen_power_state = ScreenPowerState::Off;
+                    tracing::debug!("Display off after {off_secs}s idle");
+                }
+                return;
+            }
+        }
+
+        // Check screen-blank timeout.
+        if let Some(blank_secs) = self.config.screen_blank_timeout_secs {
+            if elapsed >= Duration::from_secs_f64(blank_secs) {
+                if self.screen_power_state == ScreenPowerState::Active {
+                    self.screen_power_state = ScreenPowerState::Blanked;
+                    tracing::debug!("Screen blanked after {blank_secs}s idle");
+                }
+                return;
+            }
+        }
+    }
+
+    // --- Window params ---
 
     /// Compute effective decoration parameters for a window, applying any
     /// matching window rules over the global config defaults.
@@ -309,6 +425,7 @@ impl State {
             border_thickness: self.config.border_thickness,
             border_color: self.config.border_color,
             fullscreen: false,
+            idle_hold: IdleHoldPolicy::Default,
         };
         for cr in &self.compiled_rules {
             let title_matches = cr.title_re.as_ref().map_or(true, |re| {
@@ -325,6 +442,7 @@ impl State {
                 if let Some(v) = cr.rule.border_thickness { params.border_thickness = v; }
                 if let Some(v) = cr.rule.border_color { params.border_color = v; }
                 if let Some(v) = cr.rule.fullscreen { params.fullscreen = v; }
+                if let Some(ref v) = cr.rule.idle_hold { params.idle_hold = v.clone(); }
             }
         }
         if is_fullscreen || params.fullscreen {
@@ -503,12 +621,26 @@ impl State {
             self.remove_window(id);
         }
         self.layer_surfaces.retain(|s| s.alive());
+        // Clean up idle inhibitors for dead surfaces.
+        self.idle_inhibit_surfaces.retain(|s| s.alive());
         while let Ok(cmd) = self.ipc_rx.try_recv() {
             match cmd {
-                IpcCommand::ShowDesktop(n) => self.show_desktop(n),
-                IpcCommand::ShowWindow(id) => self.show_window(id),
-                IpcCommand::KillWindow(id) => self.kill_window(id),
-                IpcCommand::ToggleFullscreen(id) => self.toggle_fullscreen(id),
+                IpcCommand::ShowDesktop(n) => {
+                    self.show_desktop(n);
+                    self.record_activity();
+                },
+                IpcCommand::ShowWindow(id) => {
+                    self.show_window(id);
+                    self.record_activity();
+                },
+                IpcCommand::KillWindow(id) => {
+                    self.kill_window(id);
+                    self.record_activity();
+                },
+                IpcCommand::ToggleFullscreen(id) => {
+                    self.toggle_fullscreen(id);
+                    self.record_activity();
+                },
             }
         }
     }
@@ -618,10 +750,6 @@ impl State {
                     };
 
                     // Popups (in front of window surface)
-                    // popup_offset is relative to parent window geometry;
-                    // add geo.loc to convert from geometry-relative to surface-relative,
-                    // then subtract the popup's own geometry offset so its visible
-                    // content (not its shadow/margin surface) lands at the right spot.
                     for (popup, popup_offset) in PopupManager::popups_for_surface(toplevel.wl_surface()) {
                         let popup_geo = popup.geometry();
                         let popup_loc = Point::<i32, Physical>::from((
