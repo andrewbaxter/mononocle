@@ -1,5 +1,6 @@
 use {
     crate::ipc::{
+        ListWindowsResponse,
         WindowEvent,
         WindowInfo,
         protocol,
@@ -20,6 +21,7 @@ pub struct SharedIpcState {
     pub windows: Vec<WindowInfo>,
     pub current_window_id: Option<u64>,
     pub current_desktop: u32,
+    pub lock_inhibited: bool,
     pub event_tx: broadcast::Sender<WindowEvent>,
 }
 
@@ -30,6 +32,7 @@ impl SharedIpcState {
             windows: Vec::new(),
             current_window_id: None,
             current_desktop: 0,
+            lock_inhibited: false,
             event_tx,
         }
     }
@@ -104,8 +107,11 @@ async fn handle_connection(
         };
         let resp = match req {
             protocol::ServerReq::ListWindows(respond, _) => {
-                let windows = shared.lock().unwrap().windows.clone();
-                respond(windows)
+                let s = shared.lock().unwrap();
+                respond(ListWindowsResponse {
+                    windows: s.windows.clone(),
+                    lock_inhibited: s.lock_inhibited,
+                })
             },
             protocol::ServerReq::ShowDesktop(respond, desktop) => {
                 cmd_tx.send(IpcCommand::ShowDesktop(desktop)).ok();
@@ -138,6 +144,7 @@ async fn handle_connection(
                         s.windows.iter().map(|w| WindowEvent::WindowCreated { window: w.clone() }).collect();
                     events.push(WindowEvent::ShownDesktopChanged { desktop: s.current_desktop });
                     events.push(WindowEvent::ShownWindowChanged { window_id: s.current_window_id });
+                    events.push(WindowEvent::LockInhibitedChanged { lock_inhibited: s.lock_inhibited });
                     events
                 } else {
                     // Subsequent calls: drain buffered events, blocking if none yet.

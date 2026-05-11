@@ -846,10 +846,15 @@ impl State {
                 .filter(|w| w.window.alive())
                 .map(|w| w.to_info(self.current_window_id))
                 .collect();
+        let lock_inhibited = self.is_idle_held();
         let mut shared = self.ipc_shared.lock().unwrap();
         shared.windows = windows;
         shared.current_window_id = self.current_window_id;
         shared.current_desktop = self.current_desktop;
+        if shared.lock_inhibited != lock_inhibited {
+            shared.lock_inhibited = lock_inhibited;
+            let _ = shared.event_tx.send(WindowEvent::LockInhibitedChanged { lock_inhibited });
+        }
     }
 
     /// Associate the currently focused window's PID tree with its desktop.

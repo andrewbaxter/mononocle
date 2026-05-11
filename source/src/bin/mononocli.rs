@@ -77,11 +77,12 @@ async fn run(socket: PathBuf, command: Command) -> Result<(), String> {
     match command {
         Command::ListWindows => {
             let mut client = protocol::Client::new(&socket).await?;
-            let windows = client.send_req(ListWindows).await?;
-            if windows.is_empty() {
+            let resp = client.send_req(ListWindows).await?;
+            println!("lock_inhibited={}", resp.lock_inhibited);
+            if resp.windows.is_empty() {
                 println!("No windows.");
             } else {
-                for w in windows {
+                for w in resp.windows {
                     let visible = if w.is_visible {
                         " [visible]"
                     } else {

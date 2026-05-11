@@ -30,6 +30,15 @@ pub enum WindowEvent {
     ShownDesktopChanged {
         desktop: u32,
     },
+    LockInhibitedChanged {
+        lock_inhibited: bool,
+    },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct ListWindowsResponse {
+    pub windows: Vec<WindowInfo>,
+    pub lock_inhibited: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -58,7 +67,7 @@ pub struct SetDesktopArgs {
 }
 
 glove::reqresp!(pub protocol {
-    ListWindows(ListWindows) => Vec < WindowInfo >,
+    ListWindows(ListWindows) => ListWindowsResponse,
     ShowDesktop(u32) =>(),
     ShowWindow(u64) =>(),
     KillWindow(KillWindowArgs) =>(),
