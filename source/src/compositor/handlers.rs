@@ -101,11 +101,21 @@ impl CompositorHandler for State {
     fn commit(&mut self, surface: &WlSurface) {
         smithay::backend::renderer::utils::on_commit_buffer_handler::<Self>(surface);
         self.popup_manager.commit(surface);
-        // Update the bounding box for any window whose surface was committed.
+        // Update the bounding box for any window whose surface was committed,
+        // and re-apply rules if title/app_id changed.
+        let mut reapply_id = None;
         for mw in &self.windows {
             if mw.window.toplevel().map_or(false, |t| t.wl_surface() == surface) {
                 mw.window.on_commit();
+                // Detect title/app_id change by comparing current values against
+                // the effective params. Re-apply on every commit for the matched
+                // window since smithay doesn't provide a separate title-changed
+                // callback — the cost is negligible.
+                reapply_id = Some(mw.id);
             }
+        }
+        if let Some(wid) = reapply_id {
+            self.reapply_window_rules(wid);
         }
         {
             let mut layer_map = layer_map_for_output(&self.output);

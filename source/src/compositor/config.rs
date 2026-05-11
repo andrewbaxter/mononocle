@@ -30,13 +30,77 @@ pub enum IdleHoldPolicy {
     BlockHold,
 }
 
+/// Boolean tree for matching windows by title and/or app_id.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RuleCriteria {
+    /// Matches if the window title matches this regex.
+    Title(String),
+    /// Matches if the app_id matches this regex.
+    AppId(String),
+    /// Matches if all sub-criteria match.
+    And(Vec<RuleCriteria>),
+    /// Matches if any sub-criterion matches.
+    Or(Vec<RuleCriteria>),
+}
+
+/// Boolean tree for matching outputs by connector, model, manufacturer, or serial.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum OutputCriteria {
+    /// Matches if the connector name matches this regex (e.g. "HDMI-A-1").
+    Connector(String),
+    /// Matches if the monitor model matches this regex.
+    Model(String),
+    /// Matches if the manufacturer matches this regex.
+    Manufacturer(String),
+    /// Matches if the serial number matches this regex.
+    Serial(String),
+    /// Matches if all sub-criteria match.
+    And(Vec<OutputCriteria>),
+    /// Matches if any sub-criterion matches.
+    Or(Vec<OutputCriteria>),
+}
+
+/// Positional relation of a secondary output to the main output.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum OutputPosition {
+    /// To the left of the main output.
+    Left,
+    /// To the right of the main output.
+    Right,
+    /// Above the main output.
+    Above,
+    /// Below the main output.
+    Below,
+    /// No positional relation — mouse cannot move to this output.
+    None,
+}
+
+/// Configuration for a named/matched output.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OutputConfig {
+    /// Boolean tree of matching criteria for this output.
+    #[serde(rename = "match")]
+    pub criteria: OutputCriteria,
+    /// Desktops assigned to this output.
+    pub desktops: Vec<u32>,
+    /// Positional relation to the main output.
+    #[serde(default = "default_output_position")]
+    pub position: OutputPosition,
+}
+
+fn default_output_position() -> OutputPosition {
+    OutputPosition::None
+}
+
 /// A window rule that overrides decoration parameters for matching windows.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WindowRule {
-    /// Regex matched against the window title.
-    pub title: Option<String>,
-    /// Regex matched against the app_id.
-    pub app_id: Option<String>,
+    /// Boolean tree of matching criteria.
+    #[serde(rename = "match")]
+    pub criteria: RuleCriteria,
     /// Override outer padding in logical pixels.
     pub padding: Option<i32>,
     /// Override corner radius in logical pixels.
@@ -83,7 +147,7 @@ pub struct Config {
     /// Border color as [r, g, b, a] in 0..1.
     #[serde(default = "default_border_color")]
     pub border_color: [f32; 4],
-    /// Window rules applied in order; all matching rules are applied.
+    /// Window rules applied in order; the first matching rule is applied.
     #[serde(default)]
     pub window_rules: Vec<WindowRule>,
     /// Path for the IPC Unix socket.
@@ -92,6 +156,10 @@ pub struct Config {
     /// Number of virtual desktops.
     #[serde(default = "default_desktops")]
     pub desktops: u32,
+    /// Output configurations: match outputs and assign desktops/positions.
+    /// The main output is chosen from any initially non-matching output.
+    #[serde(default)]
+    pub outputs: Vec<OutputConfig>,
     /// Seconds of inactivity before the screen blanks (renders black). None = disabled.
     #[serde(default)]
     pub screen_blank_timeout_secs: Option<f64>,
@@ -191,6 +259,7 @@ impl Default for Config {
             window_rules: Vec::new(),
             socket: default_socket(),
             desktops: default_desktops(),
+            outputs: Vec::new(),
             screen_blank_timeout_secs: None,
             display_off_timeout_secs: None,
             mouse_jitter_threshold: default_mouse_jitter_threshold(),

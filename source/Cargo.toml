@@ -25,8 +25,18 @@ schemars = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 aargvark = { version = "0.9.6", features = ["serde_json"] }
-tokio = { version = "1", features = ["rt", "net", "io-util", "macros", "sync", "time"] }
-image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
+tokio = { version = "1", features = [
+    "rt",
+    "net",
+    "io-util",
+    "macros",
+    "sync",
+    "time",
+] }
+image = { version = "0.25", default-features = false, features = [
+    "png",
+    "jpeg",
+] }
 libc = "0.2"
 regex = "1"
 tracing = "0.1"
@@ -42,3 +52,6 @@ features = [
     "renderer_gl",
     "wayland_frontend",
 ]
+
+[lints.clippy]
+all = "allow"

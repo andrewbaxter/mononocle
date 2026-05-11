@@ -5,6 +5,10 @@ use {
                 BackgroundSize,
                 Config,
                 IdleHoldPolicy,
+                OutputConfig,
+                OutputCriteria,
+                OutputPosition,
+                RuleCriteria,
                 WindowRule,
             },
             ipc_server::{
@@ -225,11 +229,78 @@ pub struct EffectiveWindowParams {
     pub idle_hold: IdleHoldPolicy,
 }
 
-/// A compiled window rule with pre-built regexes.
+/// Compiled boolean criteria tree with pre-built regexes.
+enum CompiledCriteria {
+    Title(Regex),
+    AppId(Regex),
+    And(Vec<CompiledCriteria>),
+    Or(Vec<CompiledCriteria>),
+}
+
+impl CompiledCriteria {
+    fn matches(&self, title: Option<&str>, app_id: Option<&str>) -> bool {
+        match self {
+            CompiledCriteria::Title(re) => title.map_or(false, |t| re.is_match(t)),
+            CompiledCriteria::AppId(re) => app_id.map_or(false, |a| re.is_match(a)),
+            CompiledCriteria::And(children) => children.iter().all(|c| c.matches(title, app_id)),
+            CompiledCriteria::Or(children) => children.iter().any(|c| c.matches(title, app_id)),
+        }
+    }
+}
+
+/// A compiled window rule with pre-built criteria tree.
 struct CompiledRule {
-    title_re: Option<Regex>,
-    app_id_re: Option<Regex>,
+    criteria: Option<CompiledCriteria>,
     rule: WindowRule,
+}
+
+/// Compiled boolean criteria tree for output matching.
+enum CompiledOutputCriteria {
+    Connector(Regex),
+    Model(Regex),
+    Manufacturer(Regex),
+    Serial(Regex),
+    And(Vec<CompiledOutputCriteria>),
+    Or(Vec<CompiledOutputCriteria>),
+}
+
+impl CompiledOutputCriteria {
+    fn matches(&self, connector: &str, model: &str, manufacturer: &str, serial: &str) -> bool {
+        match self {
+            CompiledOutputCriteria::Connector(re) => re.is_match(connector),
+            CompiledOutputCriteria::Model(re) => re.is_match(model),
+            CompiledOutputCriteria::Manufacturer(re) => re.is_match(manufacturer),
+            CompiledOutputCriteria::Serial(re) => re.is_match(serial),
+            CompiledOutputCriteria::And(children) => {
+                children.iter().all(|c| c.matches(connector, model, manufacturer, serial))
+            },
+            CompiledOutputCriteria::Or(children) => {
+                children.iter().any(|c| c.matches(connector, model, manufacturer, serial))
+            },
+        }
+    }
+}
+
+/// A compiled output config with pre-built criteria.
+struct CompiledOutputConfig {
+    criteria: Option<CompiledOutputCriteria>,
+    desktops: Vec<u32>,
+    position: OutputPosition,
+}
+
+/// Index into State::output_states identifying which output.
+pub type OutputIndex = usize;
+
+/// Per-output state tracking.
+pub struct OutputState {
+    /// Desktops assigned to this output.
+    pub desktops: Vec<u32>,
+    /// Currently displayed desktop on this output.
+    pub current_desktop: u32,
+    /// Currently focused window on this output (the window shown on its current desktop).
+    pub current_window_id: Option<u64>,
+    /// Positional relation to the main output.
+    pub position: OutputPosition,
 }
 
 pub struct State {
@@ -285,6 +356,15 @@ pub struct State {
     pub lock_last_keystroke: Instant,
     /// When set, the lock circle is hidden until this time (backspace dismiss).
     pub lock_circle_hidden_until: Option<Instant>,
+    // --- Multi-output ---
+    /// Per-output state. Index 0 is always the main output.
+    pub output_states: Vec<OutputState>,
+    /// Which output the mouse is currently on (index into output_states).
+    pub current_output: OutputIndex,
+    /// Set to true when a desktop switch requires warping the mouse to another output.
+    /// The main loop should handle the actual warp and reset this flag.
+    pub warp_mouse_needed: bool,
+    compiled_output_configs: Vec<CompiledOutputConfig>,
     // --- Misc ---
     pub config: Config,
     compiled_rules: Vec<CompiledRule>,
@@ -326,6 +406,18 @@ impl State {
         output.create_global::<Self>(&dh);
 
         let compiled_rules = compile_rules(&config.window_rules);
+        let compiled_output_configs = compile_output_configs(&config.outputs);
+
+        // Build initial output states: all desktops on the main output.
+        // Secondary outputs will be populated when matched via attach_output().
+        let all_desktops: Vec<u32> = (0..config.desktops).collect();
+        let main_output_state = OutputState {
+            desktops: all_desktops,
+            current_desktop: 0,
+            current_window_id: None,
+            position: OutputPosition::None,
+        };
+
         let now = Instant::now();
 
         Self {
@@ -364,6 +456,10 @@ impl State {
             lock_blanked: false,
             lock_last_keystroke: now,
             lock_circle_hidden_until: None,
+            output_states: vec![main_output_state],
+            current_output: 0,
+            warp_mouse_needed: false,
+            compiled_output_configs,
             config,
             compiled_rules,
             display_handle: dh,
@@ -555,6 +651,96 @@ impl State {
         }
     }
 
+    // --- Multi-output management ---
+
+    /// Find which output owns a given desktop number.
+    /// Returns the output index, or 0 (main) if the desktop isn't assigned to any secondary output.
+    pub fn output_for_desktop(&self, desktop: u32) -> OutputIndex {
+        for (i, os) in self.output_states.iter().enumerate() {
+            if os.desktops.contains(&desktop) {
+                return i;
+            }
+        }
+        0
+    }
+
+    /// Try to match an output (by its properties) against the configured output
+    /// rules. Returns the index of the matched config, or None.
+    pub fn match_output_config(
+        &self,
+        connector: &str,
+        model: &str,
+        manufacturer: &str,
+        serial: &str,
+    ) -> Option<usize> {
+        for (i, cfg) in self.compiled_output_configs.iter().enumerate() {
+            if let Some(ref criteria) = cfg.criteria {
+                if criteria.matches(connector, model, manufacturer, serial) {
+                    return Some(i);
+                }
+            }
+        }
+        None
+    }
+
+    /// Attach a secondary output. If it matches a config, its desktops are
+    /// removed from the main output and a new OutputState is created.
+    /// Returns the output index if matched, or None.
+    pub fn attach_output(
+        &mut self,
+        connector: &str,
+        model: &str,
+        manufacturer: &str,
+        serial: &str,
+    ) -> Option<OutputIndex> {
+        let config_idx = self.match_output_config(connector, model, manufacturer, serial)?;
+        let cfg = &self.compiled_output_configs[config_idx];
+        let desktops = cfg.desktops.clone();
+        let position = cfg.position.clone();
+
+        // Remove these desktops from the main output (index 0).
+        self.output_states[0].desktops.retain(|d| !desktops.contains(d));
+
+        let first_desktop = desktops.first().copied().unwrap_or(0);
+        let first_window = self.windows.iter()
+            .find(|w| w.desktop == first_desktop && w.window.alive())
+            .map(|w| w.id);
+
+        let idx = self.output_states.len();
+        self.output_states.push(OutputState {
+            desktops,
+            current_desktop: first_desktop,
+            current_window_id: first_window,
+            position,
+        });
+        tracing::info!(
+            "Output matched config: connector={connector}, assigned output index {idx}"
+        );
+        Some(idx)
+    }
+
+    /// The global current window is the current window of whichever output
+    /// the mouse is on.
+    pub fn global_current_window_id(&self) -> Option<u64> {
+        self.output_states.get(self.current_output)
+            .and_then(|os| os.current_window_id)
+    }
+
+    /// Compute the warped mouse position when switching outputs.
+    /// Keeps the same relative position as a percentage of the output size.
+    pub fn compute_warped_mouse_pos(&self, current_pos: Point<f64, Logical>) -> Point<f64, Logical> {
+        let w = self.output_size.w as f64;
+        let h = self.output_size.h as f64;
+        if w <= 0.0 || h <= 0.0 {
+            return current_pos;
+        }
+        // Since we use a single winit window, the "warp" just keeps the same
+        // fractional position. With real multi-output this would use per-output sizes.
+        let frac_x = (current_pos.x / w).clamp(0.0, 1.0);
+        let frac_y = (current_pos.y / h).clamp(0.0, 1.0);
+        Point::from((frac_x * w, frac_y * h))
+    }
+
     // --- Window params ---
 
     /// Compute effective decoration parameters for a window, applying any
@@ -574,14 +760,10 @@ impl State {
             fullscreen: false,
             idle_hold: IdleHoldPolicy::Default,
         };
+        // Apply the first matching rule.
         for cr in &self.compiled_rules {
-            let title_matches = cr.title_re.as_ref().map_or(true, |re| {
-                title.map_or(false, |t| re.is_match(t))
-            });
-            let app_id_matches = cr.app_id_re.as_ref().map_or(true, |re| {
-                app_id.map_or(false, |a| re.is_match(a))
-            });
-            if title_matches && app_id_matches {
+            let matched = cr.criteria.as_ref().map_or(false, |c| c.matches(title, app_id));
+            if matched {
                 if let Some(v) = cr.rule.padding { params.padding = v; }
                 if let Some(v) = cr.rule.corner_radius { params.corner_radius = v; }
                 if let Some(v) = cr.rule.inner_padding { params.inner_padding = v; }
@@ -590,6 +772,7 @@ impl State {
                 if let Some(v) = cr.rule.border_color { params.border_color = v; }
                 if let Some(v) = cr.rule.fullscreen { params.fullscreen = v; }
                 if let Some(ref v) = cr.rule.idle_hold { params.idle_hold = v.clone(); }
+                break;
             }
         }
         if is_fullscreen || params.fullscreen {
@@ -600,6 +783,34 @@ impl State {
             params.border_thickness = 0;
         }
         params
+    }
+
+    /// Re-apply window rules to a window (e.g. after title/app_id change).
+    /// Reconfigures the window if the effective fullscreen state changed.
+    pub fn reapply_window_rules(&mut self, wid: u64) {
+        let Some(mw) = self.windows.iter().find(|w| w.id == wid) else { return };
+        let params = self.effective_window_params_for(mw);
+        let old_fullscreen = mw.fullscreen;
+        let new_fullscreen = params.fullscreen;
+        if old_fullscreen != new_fullscreen {
+            if let Some(mw) = self.windows.iter_mut().find(|w| w.id == wid) {
+                mw.fullscreen = new_fullscreen;
+            }
+            let content_area = self.window_content_area_for(&params);
+            if let Some(mw) = self.windows.iter().find(|w| w.id == wid) {
+                if let Some(t) = mw.window.toplevel() {
+                    t.with_pending_state(|s| {
+                        s.size = Some(content_area.size);
+                        if new_fullscreen {
+                            s.states.set(xdg_toplevel::State::Fullscreen);
+                        } else {
+                            s.states.unset(xdg_toplevel::State::Fullscreen);
+                        }
+                    });
+                    t.send_pending_configure();
+                }
+            }
+        }
     }
 
     /// The total decoration box for a window: layer zone minus outer padding.
@@ -650,7 +861,23 @@ impl State {
         let prev = self.current_window_id;
         self.current_window_id = Some(id);
         if let Some(w) = self.windows.iter().find(|w| w.id == id) {
-            self.current_desktop = w.desktop;
+            let desktop = w.desktop;
+            self.current_desktop = desktop;
+            // Update the owning output's state.
+            let target_output = self.output_for_desktop(desktop);
+            if let Some(os) = self.output_states.get_mut(target_output) {
+                os.current_desktop = desktop;
+                os.current_window_id = Some(id);
+            }
+            // Warp mouse if needed.
+            if target_output != self.current_output {
+                if let Some(os) = self.output_states.get(target_output) {
+                    if !matches!(os.position, OutputPosition::None) {
+                        self.current_output = target_output;
+                        self.warp_mouse_needed = true;
+                    }
+                }
+            }
         }
         let params = self.windows.iter()
             .find(|w| w.id == id)
@@ -687,13 +914,37 @@ impl State {
     }
 
     pub fn show_desktop(&mut self, desktop: u32) {
-        if self.current_desktop == desktop {
-            return;
+        // Determine which output owns this desktop.
+        let target_output = self.output_for_desktop(desktop);
+
+        // Check if we need to switch the mouse to a different output.
+        let needs_warp = target_output != self.current_output;
+
+        // If the target output is unreachable (position=None and not current), ignore.
+        if needs_warp {
+            if let Some(os) = self.output_states.get(target_output) {
+                if matches!(os.position, OutputPosition::None) {
+                    tracing::debug!("Desktop {desktop} is on unreachable output {target_output}");
+                    return;
+                }
+            }
         }
-        self.current_desktop = desktop;
-        let first = self.windows.iter().find(|w| w.desktop == desktop && w.window.alive()).map(|w| w.id);
+
+        // Update the target output's current desktop and window.
+        let first = self.windows.iter()
+            .find(|w| w.desktop == desktop && w.window.alive())
+            .map(|w| w.id);
+
+        if let Some(os) = self.output_states.get_mut(target_output) {
+            if os.current_desktop == desktop && !needs_warp {
+                return;
+            }
+            os.current_desktop = desktop;
+            os.current_window_id = first;
+        }
+
+        // Deactivate old current window.
         let prev = self.current_window_id;
-        self.current_window_id = first;
         if let Some(prev_id) = prev {
             if let Some(mw) = self.windows.iter().find(|w| w.id == prev_id) {
                 if let Some(t) = mw.window.toplevel() {
@@ -704,6 +955,17 @@ impl State {
                 }
             }
         }
+
+        // Switch to the target output if needed (warp mouse).
+        if needs_warp {
+            self.current_output = target_output;
+            self.warp_mouse_needed = true;
+        }
+
+        // Update global state.
+        self.current_desktop = desktop;
+        self.current_window_id = first;
+
         if let Some(new_id) = first {
             let params = self.windows.iter()
                 .find(|w| w.id == new_id)
@@ -799,6 +1061,9 @@ impl State {
     }
 
     fn remove_window(&mut self, id: u64) {
+        // Find the desktop of the window being removed.
+        let window_desktop = self.windows.iter().find(|w| w.id == id).map(|w| w.desktop);
+
         if self.current_window_id == Some(id) {
             let next =
                 self
@@ -826,6 +1091,20 @@ impl State {
             }
             self.push_event(WindowEvent::ShownWindowChanged { window_id: self.current_window_id });
         }
+
+        // Also update the per-output state if this window was the output's current window.
+        if let Some(desktop) = window_desktop {
+            let output_idx = self.output_for_desktop(desktop);
+            if let Some(os) = self.output_states.get_mut(output_idx) {
+                if os.current_window_id == Some(id) {
+                    let next = self.windows.iter()
+                        .find(|w| w.id != id && w.desktop == os.current_desktop && w.window.alive())
+                        .map(|w| w.id);
+                    os.current_window_id = next;
+                }
+            }
+        }
+
         self.windows.retain(|w| w.id != id);
         self.push_event(WindowEvent::WindowDeleted { id });
         self.sync_ipc_windows();
@@ -1252,21 +1531,41 @@ fn push_colored_rect(
 // Helper: compile window rules into regex-bearing structs
 // ---------------------------------------------------------------------------
 
+fn compile_criteria(criteria: &RuleCriteria) -> Option<CompiledCriteria> {
+    match criteria {
+        RuleCriteria::Title(pat) => Regex::new(pat)
+            .map_err(|e| tracing::warn!("Invalid title regex {:?}: {e}", pat))
+            .ok()
+            .map(CompiledCriteria::Title),
+        RuleCriteria::AppId(pat) => Regex::new(pat)
+            .map_err(|e| tracing::warn!("Invalid app_id regex {:?}: {e}", pat))
+            .ok()
+            .map(CompiledCriteria::AppId),
+        RuleCriteria::And(children) => {
+            let compiled: Vec<_> = children.iter().filter_map(compile_criteria).collect();
+            if compiled.len() == children.len() {
+                Some(CompiledCriteria::And(compiled))
+            } else {
+                None
+            }
+        }
+        RuleCriteria::Or(children) => {
+            let compiled: Vec<_> = children.iter().filter_map(compile_criteria).collect();
+            if compiled.len() == children.len() {
+                Some(CompiledCriteria::Or(compiled))
+            } else {
+                None
+            }
+        }
+    }
+}
+
 fn compile_rules(rules: &[WindowRule]) -> Vec<CompiledRule> {
     rules
         .iter()
         .map(|rule| {
-            let title_re = rule.title.as_deref().and_then(|pat| {
-                Regex::new(pat)
-                    .map_err(|e| tracing::warn!("Invalid title regex {:?}: {e}", pat))
-                    .ok()
-            });
-            let app_id_re = rule.app_id.as_deref().and_then(|pat| {
-                Regex::new(pat)
-                    .map_err(|e| tracing::warn!("Invalid app_id regex {:?}: {e}", pat))
-                    .ok()
-            });
-            CompiledRule { title_re, app_id_re, rule: rule.clone() }
+            let criteria = compile_criteria(&rule.criteria);
+            CompiledRule { criteria, rule: rule.clone() }
         })
         .collect()
 }
@@ -1379,6 +1678,61 @@ impl Iterator for PidAncestors {
         };
         Some(pid)
     }
+}
+
+// ---------------------------------------------------------------------------
+// Helper: compile output criteria into regex-bearing structs
+// ---------------------------------------------------------------------------
+
+fn compile_output_criteria(criteria: &OutputCriteria) -> Option<CompiledOutputCriteria> {
+    match criteria {
+        OutputCriteria::Connector(pat) => Regex::new(pat)
+            .map_err(|e| tracing::warn!("Invalid connector regex {:?}: {e}", pat))
+            .ok()
+            .map(CompiledOutputCriteria::Connector),
+        OutputCriteria::Model(pat) => Regex::new(pat)
+            .map_err(|e| tracing::warn!("Invalid model regex {:?}: {e}", pat))
+            .ok()
+            .map(CompiledOutputCriteria::Model),
+        OutputCriteria::Manufacturer(pat) => Regex::new(pat)
+            .map_err(|e| tracing::warn!("Invalid manufacturer regex {:?}: {e}", pat))
+            .ok()
+            .map(CompiledOutputCriteria::Manufacturer),
+        OutputCriteria::Serial(pat) => Regex::new(pat)
+            .map_err(|e| tracing::warn!("Invalid serial regex {:?}: {e}", pat))
+            .ok()
+            .map(CompiledOutputCriteria::Serial),
+        OutputCriteria::And(children) => {
+            let compiled: Vec<_> = children.iter().filter_map(compile_output_criteria).collect();
+            if compiled.len() == children.len() {
+                Some(CompiledOutputCriteria::And(compiled))
+            } else {
+                None
+            }
+        },
+        OutputCriteria::Or(children) => {
+            let compiled: Vec<_> = children.iter().filter_map(compile_output_criteria).collect();
+            if compiled.len() == children.len() {
+                Some(CompiledOutputCriteria::Or(compiled))
+            } else {
+                None
+            }
+        },
+    }
+}
+
+fn compile_output_configs(configs: &[OutputConfig]) -> Vec<CompiledOutputConfig> {
+    configs
+        .iter()
+        .map(|cfg| {
+            let criteria = compile_output_criteria(&cfg.criteria);
+            CompiledOutputConfig {
+                criteria,
+                desktops: cfg.desktops.clone(),
+                position: cfg.position.clone(),
+            }
+        })
+        .collect()
 }
 
 fn parent_pid(pid: u32) -> Option<u32> {
