@@ -139,6 +139,20 @@ pub enum ScreenPowerState {
     Active,
     Blanked,
     Off,
+    Locked,
+}
+
+/// Lock screen UI state.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LockInputState {
+    /// Waiting for the user to start typing.
+    Idle,
+    /// User is typing a password.
+    Typing,
+    /// Password submitted, waiting for verification.
+    Verifying,
+    /// Verification failed, showing error briefly.
+    Failed,
 }
 
 pub struct ManagedWindow {
@@ -250,6 +264,19 @@ pub struct State {
     pub cursor_visible: bool,
     /// Surfaces with active zwp_idle_inhibitor_v1 objects.
     pub idle_inhibit_surfaces: HashSet<WlSurface>,
+    // --- Lock screen ---
+    pub lock_input_state: LockInputState,
+    pub lock_password: String,
+    /// When Some, an async password check is in flight.
+    pub lock_verify_rx: Option<std::sync::mpsc::Receiver<bool>>,
+    /// Time when the lock_input_state last changed (for Failed -> Idle timeout).
+    pub lock_state_changed: Instant,
+    /// When locked, whether the screen has blanked due to continued inactivity.
+    pub lock_blanked: bool,
+    /// Last keystroke time on the lock screen (for active color flash).
+    pub lock_last_keystroke: Instant,
+    /// When set, the lock circle is hidden until this time (backspace dismiss).
+    pub lock_circle_hidden_until: Option<Instant>,
     // --- Misc ---
     pub config: Config,
     compiled_rules: Vec<CompiledRule>,
@@ -320,6 +347,13 @@ impl State {
             screen_power_state: ScreenPowerState::Active,
             cursor_visible: true,
             idle_inhibit_surfaces: HashSet::new(),
+            lock_input_state: LockInputState::Idle,
+            lock_password: String::new(),
+            lock_verify_rx: None,
+            lock_state_changed: now,
+            lock_blanked: false,
+            lock_last_keystroke: now,
+            lock_circle_hidden_until: None,
             config,
             compiled_rules,
             display_handle: dh,
@@ -332,9 +366,27 @@ impl State {
     /// Record user activity, resetting idle timers and waking the screen.
     pub fn record_activity(&mut self) {
         self.last_activity = Instant::now();
-        if self.screen_power_state != ScreenPowerState::Active {
-            self.screen_power_state = ScreenPowerState::Active;
-            tracing::debug!("Screen woke up");
+        match self.screen_power_state {
+            ScreenPowerState::Active => {},
+            ScreenPowerState::Locked => {
+                // Stay locked — activity just resets idle timer for cursor hide etc.
+            },
+            ScreenPowerState::Blanked | ScreenPowerState::Off => {
+                self.screen_power_state = ScreenPowerState::Active;
+                tracing::debug!("Screen woke up");
+            },
+        }
+    }
+
+    /// Record activity while locked — wake from blanked/off into locked state.
+    pub fn record_lock_activity(&mut self) {
+        self.last_activity = Instant::now();
+        if self.screen_power_state != ScreenPowerState::Locked {
+            self.screen_power_state = ScreenPowerState::Locked;
+        }
+        if self.lock_blanked {
+            self.lock_blanked = false;
+            tracing::debug!("Lock screen unblanked");
         }
     }
 
@@ -396,11 +448,77 @@ impl State {
             }
         }
 
+        // Check for async password verification result.
+        if let Some(ref rx) = self.lock_verify_rx {
+            match rx.try_recv() {
+                Ok(true) => {
+                    tracing::info!("Unlock successful");
+                    self.screen_power_state = ScreenPowerState::Active;
+                    self.lock_input_state = LockInputState::Idle;
+                    self.lock_password.clear();
+                    self.lock_verify_rx = None;
+                    self.lock_blanked = false;
+                    self.last_activity = Instant::now();
+                    return;
+                },
+                Ok(false) => {
+                    tracing::debug!("Unlock failed");
+                    self.lock_input_state = LockInputState::Failed;
+                    self.lock_state_changed = Instant::now();
+                    self.lock_password.clear();
+                    self.lock_verify_rx = None;
+                },
+                Err(std::sync::mpsc::TryRecvError::Empty) => {},
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    tracing::warn!("Unlock verify channel disconnected");
+                    self.lock_input_state = LockInputState::Failed;
+                    self.lock_state_changed = Instant::now();
+                    self.lock_password.clear();
+                    self.lock_verify_rx = None;
+                },
+            }
+        }
+
+        // Failed state auto-clears after 2 seconds.
+        if self.lock_input_state == LockInputState::Failed
+            && self.lock_state_changed.elapsed() >= Duration::from_secs(2)
+        {
+            self.lock_input_state = LockInputState::Idle;
+        }
+
+        // If already locked, check blank timeout but don't process other transitions.
+        if self.screen_power_state == ScreenPowerState::Locked {
+            if !self.lock_blanked {
+                if let Some(blank_secs) = self.config.screen_blank_timeout_secs {
+                    if self.last_activity.elapsed() >= Duration::from_secs_f64(blank_secs) {
+                        self.lock_blanked = true;
+                        tracing::debug!("Lock screen blanked after {blank_secs}s idle");
+                    }
+                }
+            }
+            return;
+        }
+
         if self.is_idle_held() {
             return;
         }
 
         let elapsed = self.last_activity.elapsed();
+
+        // Check lock timeout.
+        if let Some(lock_secs) = self.config.lock_timeout_secs {
+            if elapsed >= Duration::from_secs_f64(lock_secs) {
+                if self.screen_power_state != ScreenPowerState::Locked {
+                    self.screen_power_state = ScreenPowerState::Locked;
+                    self.lock_input_state = LockInputState::Idle;
+                    self.lock_password.clear();
+                    self.lock_blanked = false;
+                    self.cursor_visible = false;
+                    tracing::debug!("Screen locked after {lock_secs}s idle");
+                }
+                return;
+            }
+        }
 
         // Check display-off timeout first (it's the longer one).
         if let Some(off_secs) = self.config.display_off_timeout_secs {
@@ -716,6 +834,44 @@ impl State {
         shared.windows = windows;
         shared.current_window_id = self.current_window_id;
         shared.current_desktop = self.current_desktop;
+    }
+
+    pub fn render_lock_elements(&self) -> Vec<CompElement> {
+        let mut elements: Vec<CompElement> = Vec::new();
+
+        // Hide circle if backspace-dismissed.
+        if let Some(until) = self.lock_circle_hidden_until {
+            if Instant::now() < until {
+                return elements;
+            }
+        }
+
+        let cx = self.output_size.w / 2;
+        let cy = self.output_size.h / 2;
+        let radius = 40;
+        let circle_rect = Rectangle::new(
+            Point::from((cx - radius, cy - radius)),
+            Size::from((radius * 2, radius * 2)),
+        );
+        let color = match self.lock_input_state {
+            LockInputState::Failed => [1.0, 0.3, 0.3, 1.0],
+            _ => {
+                // Flash active color for 10ms after a keystroke.
+                if self.lock_last_keystroke.elapsed() < Duration::from_millis(10) {
+                    self.config.lock_fg_active_color
+                } else {
+                    self.config.lock_fg_color
+                }
+            },
+        };
+        push_colored_rect(
+            &mut elements,
+            circle_rect,
+            color,
+            radius as f32,
+            self.rounded_rect_shader.as_ref(),
+        );
+        elements
     }
 
     pub fn render_elements(&self, renderer: &mut GlesRenderer) -> Vec<CompElement> {

@@ -3,17 +3,24 @@ use {
         Aargvark,
         vark,
     },
-    mononocle::compositor::{
-        config::Config,
-        ipc_server::{
-            SharedIpcState,
-            spawn_ipc_server,
+    mononocle::{
+        compositor::{
+            config::Config,
+            ipc_server::{
+                SharedIpcState,
+                spawn_ipc_server,
+            },
+            state::{
+                ClientState,
+                LockInputState,
+                ROUNDED_RECT_SHADER,
+                ScreenPowerState,
+                State,
+            },
         },
-        state::{
-            ClientState,
-            ROUNDED_RECT_SHADER,
-            ScreenPowerState,
-            State,
+        ipc::{
+            CheckPassword,
+            unlock_protocol,
         },
     },
     smithay::{
@@ -229,20 +236,32 @@ fn render_frame(
     let damage = Rectangle::from_size(size);
     let time_ms = state.start_time.elapsed().as_millis() as u32;
     {
-        let is_active = state.screen_power_state == ScreenPowerState::Active;
         let (renderer, mut framebuffer) = backend.bind()?;
-        let elements = if is_active {
-            state.render_elements(renderer)
-        } else {
-            Vec::new()
+        let (clear_color, elements, send_frames) = match state.screen_power_state {
+            ScreenPowerState::Active => {
+                let elems = state.render_elements(renderer);
+                (Color32F::new(0.0, 0.0, 0.0, 1.0), elems, true)
+            },
+            ScreenPowerState::Locked => {
+                if state.lock_blanked {
+                    (Color32F::new(0.0, 0.0, 0.0, 1.0), Vec::new(), false)
+                } else {
+                    let bg = state.config.lock_bg_color;
+                    let elems = state.render_lock_elements();
+                    (Color32F::new(bg[0], bg[1], bg[2], bg[3]), elems, false)
+                }
+            },
+            ScreenPowerState::Blanked | ScreenPowerState::Off => {
+                (Color32F::new(0.0, 0.0, 0.0, 1.0), Vec::new(), false)
+            },
         };
         let mut frame = renderer.render(&mut framebuffer, size, Transform::Flipped180)?;
-        frame.clear(Color32F::new(0.0, 0.0, 0.0, 1.0), &[damage])?;
-        if is_active {
+        frame.clear(clear_color, &[damage])?;
+        if !elements.is_empty() {
             let _ = draw_render_elements::<GlesRenderer, _, _>(&mut frame, 1.0, &elements, &[damage]);
         }
         let _ = frame.finish()?;
-        if is_active {
+        if send_frames {
             state.send_frames(time_ms);
         }
     }
@@ -298,6 +317,10 @@ fn compile_rounded_rect_shader(
 }
 
 fn handle_input(state: &mut State, event: InputEvent<WinitInput>) {
+    if state.screen_power_state == ScreenPowerState::Locked {
+        handle_lock_input(state, event);
+        return;
+    }
     match event {
         InputEvent::Keyboard { event } => {
             state.record_activity();
@@ -342,6 +365,131 @@ fn handle_input(state: &mut State, event: InputEvent<WinitInput>) {
         },
         _ => { },
     }
+}
+
+fn handle_lock_input(state: &mut State, event: InputEvent<WinitInput>) {
+    use smithay::backend::input::KeyState;
+    use smithay::input::keyboard::Keysym;
+
+    match event {
+        InputEvent::Keyboard { event } => {
+            state.record_lock_activity();
+            if event.state() != KeyState::Pressed {
+                // Still update xkb state for releases (modifiers).
+                if let Some(kb) = state.seat.get_keyboard() {
+                    let _: ((), _) = kb.input_intercept(
+                        state,
+                        event.key_code(),
+                        event.state(),
+                        |_, _, _| (),
+                    );
+                }
+                return;
+            }
+            // Use input_intercept to update xkb state without forwarding to clients.
+            let keysym_info = if let Some(kb) = state.seat.get_keyboard() {
+                let (info, _) = kb.input_intercept(
+                    state,
+                    event.key_code(),
+                    event.state(),
+                    |_, _, handle| {
+                        let modified = handle.modified_sym();
+                        let raw = handle.raw_syms().into_iter().next().unwrap_or(Keysym::NoSymbol);
+                        (raw, modified)
+                    },
+                );
+                Some(info)
+            } else {
+                None
+            };
+            if let Some((raw, modified)) = keysym_info {
+                match raw {
+                    Keysym::Return | Keysym::KP_Enter => {
+                        if state.lock_input_state == LockInputState::Typing && !state.lock_password.is_empty() {
+                            state.lock_last_keystroke = std::time::Instant::now();
+                            submit_lock_password(state);
+                        }
+                    },
+                    Keysym::BackSpace => {
+                        if state.lock_input_state == LockInputState::Typing
+                            || state.lock_input_state == LockInputState::Idle
+                        {
+                            state.lock_password.clear();
+                            state.lock_input_state = LockInputState::Idle;
+                            state.lock_circle_hidden_until =
+                                Some(std::time::Instant::now() + std::time::Duration::from_secs(10));
+                        }
+                    },
+                    Keysym::Escape => {
+                        if state.lock_input_state == LockInputState::Typing {
+                            state.lock_password.clear();
+                            state.lock_input_state = LockInputState::Idle;
+                        }
+                    },
+                    _ => {
+                        if state.lock_input_state == LockInputState::Verifying
+                            || state.lock_input_state == LockInputState::Failed
+                        {
+                            return;
+                        }
+                        if let Some(c) = modified.key_char() {
+                            if !c.is_control() {
+                                state.lock_password.push(c);
+                                state.lock_input_state = LockInputState::Typing;
+                                state.lock_last_keystroke = std::time::Instant::now();
+                                state.lock_circle_hidden_until = None;
+                            }
+                        }
+                    },
+                }
+            }
+        },
+        InputEvent::PointerMotionAbsolute { event } => {
+            let pos = event.position_transformed(state.output_size);
+            state.record_lock_activity();
+            let _ = pos;
+        },
+        InputEvent::PointerButton { .. } => {
+            state.record_lock_activity();
+        },
+        _ => {},
+    }
+}
+
+fn submit_lock_password(state: &mut State) {
+    state.lock_input_state = LockInputState::Verifying;
+    let password = state.lock_password.clone();
+    let socket_path = state.config.unlock_socket.clone();
+    let (tx, rx) = std::sync::mpsc::channel();
+    state.lock_verify_rx = Some(rx);
+    std::thread::spawn(move || {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build();
+        let result = match rt {
+            Ok(rt) => rt.block_on(async {
+                let mut client = match unlock_protocol::Client::new(&socket_path).await {
+                    Ok(c) => c,
+                    Err(e) => {
+                        tracing::error!("Failed to connect to unlock daemon: {e}");
+                        return false;
+                    },
+                };
+                match client.send_req(CheckPassword { password }).await {
+                    Ok(result) => result,
+                    Err(e) => {
+                        tracing::error!("Unlock IPC error: {e}");
+                        false
+                    },
+                }
+            }),
+            Err(e) => {
+                tracing::error!("Failed to create tokio runtime for unlock: {e}");
+                false
+            },
+        };
+        let _ = tx.send(result);
+    });
 }
 
 fn pointer_focus_surface(

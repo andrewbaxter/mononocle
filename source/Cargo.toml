@@ -11,6 +11,14 @@ path = "src/bin/mononocle.rs"
 name = "mononocli"
 path = "src/bin/mononocli.rs"
 
+[[bin]]
+name = "mononocle-unlock"
+path = "src/bin/mononocle-unlock.rs"
+
+[[bin]]
+name = "mononocle-unlock-test"
+path = "src/bin/mononocle-unlock-test.rs"
+
 [dependencies]
 glove = { version = "0.5.1", features = ["unix"] }
 schemars = "1"
@@ -19,6 +27,7 @@ serde_json = "1"
 aargvark = { version = "0.9.6", features = ["serde_json"] }
 tokio = { version = "1", features = ["rt", "net", "io-util", "macros", "sync", "time"] }
 image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
+libc = "0.2"
 regex = "1"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }

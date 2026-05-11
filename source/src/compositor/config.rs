@@ -110,6 +110,22 @@ pub struct Config {
     /// Default: true.
     #[serde(default = "default_fullscreen_holds_idle")]
     pub fullscreen_holds_idle: bool,
+    /// Seconds of inactivity before the screen locks. Must be >= screen_blank_timeout_secs
+    /// when both are set. None = disabled.
+    #[serde(default)]
+    pub lock_timeout_secs: Option<f64>,
+    /// Lock screen background color as [r, g, b, a] in 0..1.
+    #[serde(default = "default_lock_bg_color")]
+    pub lock_bg_color: [f32; 4],
+    /// Lock screen foreground (inactive/idle) color as [r, g, b, a] in 0..1.
+    #[serde(default = "default_lock_fg_color")]
+    pub lock_fg_color: [f32; 4],
+    /// Lock screen foreground (active/typing) color as [r, g, b, a] in 0..1.
+    #[serde(default = "default_lock_fg_active_color")]
+    pub lock_fg_active_color: [f32; 4],
+    /// Path for the unlock daemon IPC Unix socket.
+    #[serde(default = "default_unlock_socket")]
+    pub unlock_socket: PathBuf,
 }
 
 fn default_background_align() -> [f64; 2] {
@@ -144,6 +160,22 @@ fn default_fullscreen_holds_idle() -> bool {
     true
 }
 
+fn default_lock_bg_color() -> [f32; 4] {
+    [0.0, 0.0, 0.0, 1.0]
+}
+
+fn default_lock_fg_color() -> [f32; 4] {
+    [0.3, 0.3, 0.3, 1.0]
+}
+
+fn default_lock_fg_active_color() -> [f32; 4] {
+    [1.0, 1.0, 1.0, 1.0]
+}
+
+fn default_unlock_socket() -> PathBuf {
+    PathBuf::from("/tmp/mononocle-unlock.sock")
+}
+
 impl Default for Config {
     fn default() -> Self {
         Self {
@@ -164,6 +196,11 @@ impl Default for Config {
             mouse_jitter_threshold: default_mouse_jitter_threshold(),
             cursor_hide_timeout_secs: None,
             fullscreen_holds_idle: default_fullscreen_holds_idle(),
+            lock_timeout_secs: None,
+            lock_bg_color: default_lock_bg_color(),
+            lock_fg_color: default_lock_fg_color(),
+            lock_fg_active_color: default_lock_fg_active_color(),
+            unlock_socket: default_unlock_socket(),
         }
     }
 }
@@ -174,6 +211,13 @@ impl Config {
             if off < blank {
                 return Err(format!(
                     "display_off_timeout_secs ({off}) must be >= screen_blank_timeout_secs ({blank})"
+                ));
+            }
+        }
+        if let (Some(blank), Some(lock)) = (self.screen_blank_timeout_secs, self.lock_timeout_secs) {
+            if lock < blank {
+                return Err(format!(
+                    "lock_timeout_secs ({lock}) must be >= screen_blank_timeout_secs ({blank})"
                 ));
             }
         }

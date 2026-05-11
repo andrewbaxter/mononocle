@@ -58,3 +58,14 @@ glove::reqresp!(pub protocol {
     ToggleFullscreen(ToggleFullscreenArgs) =>(),
     Watch(Watch) => Vec < WindowEvent >,
 });
+
+// -- Unlock daemon IPC protocol --
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct CheckPassword {
+    pub password: String,
+}
+
+glove::reqresp!(pub unlock_protocol {
+    CheckPassword(CheckPassword) => bool,
+});

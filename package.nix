@@ -3,6 +3,7 @@
    , wayland
    , libxkbcommon
    , libglvnd
+   , libxcrypt
    , wayland-scanner
    , makeWrapper
    }:
@@ -15,7 +16,7 @@
     src = ./source;
     release = !debug;
     nativeBuildInputs = [ pkg-config wayland-scanner makeWrapper ];
-    buildInputs = [ wayland libxkbcommon libglvnd ];
+    buildInputs = [ wayland libxkbcommon libglvnd libxcrypt ];
     RUSTFLAGS = toString (map (arg: "-C link-arg=" + arg) [
       "-Wl,--push-state,--no-as-needed"
       "-lEGL"
