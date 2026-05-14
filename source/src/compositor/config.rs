@@ -81,6 +81,9 @@ pub enum OutputPosition {
 /// Configuration for a named/matched output.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OutputConfig {
+    /// Optional identifier for this output, used to target it by id in CLI commands.
+    #[serde(default)]
+    pub id: Option<String>,
     /// Boolean tree of matching criteria for this output.
     #[serde(rename = "match")]
     pub criteria: OutputCriteria,

@@ -283,6 +283,7 @@ impl CompiledOutputCriteria {
 
 /// A compiled output config with pre-built criteria.
 struct CompiledOutputConfig {
+    id: Option<String>,
     criteria: Option<CompiledOutputCriteria>,
     desktops: Vec<u32>,
     position: OutputPosition,
@@ -293,6 +294,8 @@ pub type OutputIndex = usize;
 
 /// Per-output state tracking.
 pub struct OutputState {
+    /// Optional identifier for this output (from config).
+    pub id: Option<String>,
     /// Desktops assigned to this output.
     pub desktops: Vec<u32>,
     /// Currently displayed desktop on this output.
@@ -412,6 +415,7 @@ impl State {
         // Secondary outputs will be populated when matched via attach_output().
         let all_desktops: Vec<u32> = (0..config.desktops).collect();
         let main_output_state = OutputState {
+            id: None,
             desktops: all_desktops,
             current_desktop: 0,
             current_window_id: None,
@@ -664,6 +668,11 @@ impl State {
         0
     }
 
+    /// Find an output by its configured id string.
+    pub fn output_index_by_id(&self, id: &str) -> Option<OutputIndex> {
+        self.output_states.iter().position(|os| os.id.as_deref() == Some(id))
+    }
+
     /// Try to match an output (by its properties) against the configured output
     /// rules. Returns the index of the matched config, or None.
     pub fn match_output_config(
@@ -695,6 +704,7 @@ impl State {
     ) -> Option<OutputIndex> {
         let config_idx = self.match_output_config(connector, model, manufacturer, serial)?;
         let cfg = &self.compiled_output_configs[config_idx];
+        let id = cfg.id.clone();
         let desktops = cfg.desktops.clone();
         let position = cfg.position.clone();
 
@@ -708,6 +718,7 @@ impl State {
 
         let idx = self.output_states.len();
         self.output_states.push(OutputState {
+            id,
             desktops,
             current_desktop: first_desktop,
             current_window_id: first_window,
@@ -913,9 +924,27 @@ impl State {
         self.push_event(WindowEvent::ShownDesktopChanged { desktop: self.current_desktop });
     }
 
-    pub fn show_desktop(&mut self, desktop: u32) {
+    pub fn show_desktop(&mut self, desktop: u32, output: Option<&str>) {
         // Determine which output owns this desktop.
         let target_output = self.output_for_desktop(desktop);
+
+        // If an output id was specified, verify the desktop belongs to that output.
+        if let Some(id) = output {
+            match self.output_index_by_id(id) {
+                None => {
+                    tracing::warn!("show_desktop: unknown output id {:?}", id);
+                    return;
+                },
+                Some(idx) if idx != target_output => {
+                    tracing::warn!(
+                        "show_desktop: desktop {desktop} is not on output {:?}",
+                        id
+                    );
+                    return;
+                },
+                Some(_) => {},
+            }
+        }
 
         // Check if we need to switch the mouse to a different output.
         let needs_warp = target_output != self.current_output;
@@ -1036,8 +1065,8 @@ impl State {
         self.idle_inhibit_surfaces.retain(|s| s.alive());
         while let Ok(cmd) = self.ipc_rx.try_recv() {
             match cmd {
-                IpcCommand::ShowDesktop(n) => {
-                    self.show_desktop(n);
+                IpcCommand::ShowDesktop { desktop, output } => {
+                    self.show_desktop(desktop, output.as_deref());
                     self.record_activity();
                 },
                 IpcCommand::ShowWindow(id) => {
@@ -1727,6 +1756,7 @@ fn compile_output_configs(configs: &[OutputConfig]) -> Vec<CompiledOutputConfig>
         .map(|cfg| {
             let criteria = compile_output_criteria(&cfg.criteria);
             CompiledOutputConfig {
+                id: cfg.id.clone(),
                 criteria,
                 desktops: cfg.desktops.clone(),
                 position: cfg.position.clone(),

@@ -1,6 +1,7 @@
 use {
     crate::ipc::{
         ListWindowsResponse,
+        ShowDesktopArgs,
         WindowEvent,
         WindowInfo,
         protocol,
@@ -39,7 +40,7 @@ impl SharedIpcState {
 }
 
 pub enum IpcCommand {
-    ShowDesktop(u32),
+    ShowDesktop { desktop: u32, output: Option<String> },
     ShowWindow(u64),
     KillWindow(Option<u64>),
     ToggleFullscreen(Option<u64>),
@@ -113,8 +114,8 @@ async fn handle_connection(
                     lock_inhibited: s.lock_inhibited,
                 })
             },
-            protocol::ServerReq::ShowDesktop(respond, desktop) => {
-                cmd_tx.send(IpcCommand::ShowDesktop(desktop)).ok();
+            protocol::ServerReq::ShowDesktop(respond, ShowDesktopArgs { desktop, output }) => {
+                cmd_tx.send(IpcCommand::ShowDesktop { desktop, output }).ok();
                 respond(())
             },
             protocol::ServerReq::ShowWindow(respond, id) => {

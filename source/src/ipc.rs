@@ -60,6 +60,14 @@ pub struct ListWindows;
 pub struct Watch;
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct ShowDesktopArgs {
+    pub desktop: u32,
+    /// Target a specific output by its configured id. If None, uses the output
+    /// that owns the given desktop number (existing behaviour).
+    pub output: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct SetDesktopArgs {
     /// Desktop number to associate with the caller's PID tree.
     /// If None, uses the compositor's current desktop.
@@ -68,7 +76,7 @@ pub struct SetDesktopArgs {
 
 glove::reqresp!(pub protocol {
     ListWindows(ListWindows) => ListWindowsResponse,
-    ShowDesktop(u32) =>(),
+    ShowDesktop(ShowDesktopArgs) =>(),
     ShowWindow(u64) =>(),
     KillWindow(KillWindowArgs) =>(),
     ToggleFullscreen(ToggleFullscreenArgs) =>(),

@@ -7,6 +7,7 @@ use {
         KillWindowArgs,
         ListWindows,
         SetDesktopArgs,
+        ShowDesktopArgs,
         ToggleFullscreenArgs,
         Watch,
         protocol,
@@ -29,7 +30,7 @@ enum Command {
     /// Listen for window events and print them as they arrive.
     Listen,
     /// Show desktop by number (0-indexed).
-    ShowDesktop(u32),
+    ShowDesktop(ShowDesktopCliArgs),
     /// Show window by id.
     ShowWindow(u64),
     /// Kill a window. Kills focused window if no id given.
@@ -38,6 +39,16 @@ enum Command {
     ToggleFullscreen(ToggleFullscreenCliArgs),
     /// Associate the caller's PID tree with a desktop. Uses current desktop if not specified.
     SetDesktop(SetDesktopCliArgs),
+}
+
+#[derive(Aargvark)]
+struct ShowDesktopCliArgs {
+    /// Desktop number to switch to (0-indexed).
+    desktop: u32,
+    /// Target output by its configured id. If not specified, the output that
+    /// owns the desktop is used.
+    #[vark(flag = "--output", flag = "-o")]
+    output: Option<String>,
 }
 
 #[derive(Aargvark)]
@@ -104,10 +115,13 @@ async fn run(socket: PathBuf, command: Command) -> Result<(), String> {
                 }
             }
         },
-        Command::ShowDesktop(n) => {
+        Command::ShowDesktop(args) => {
             let mut client = protocol::Client::new(&socket).await?;
-            client.send_req(n).await?;
-            println!("Switched to desktop {n}.");
+            client.send_req(ShowDesktopArgs { desktop: args.desktop, output: args.output.clone() }).await?;
+            match args.output {
+                Some(ref o) => println!("Switched to desktop {} on output {}.", args.desktop, o),
+                None => println!("Switched to desktop {}.", args.desktop),
+            }
         },
         Command::ShowWindow(id) => {
             let mut client = protocol::Client::new(&socket).await?;
