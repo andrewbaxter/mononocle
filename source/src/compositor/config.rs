@@ -20,34 +20,11 @@ pub enum BackgroundSize {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct BackgroundSpec {
-    pub path: PathBuf,
     #[serde(default = "default_background_align")]
     pub align: [f64; 2],
+    pub path: PathBuf,
     #[serde(default)]
     pub size: BackgroundSize,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-#[serde(deny_unknown_fields)]
-pub struct WindowStyle {
-    #[serde(default)]
-    pub background: Option<BackgroundSpec>,
-    #[serde(default)]
-    pub border_color: Option<[f32; 4]>,
-    #[serde(default)]
-    pub border_thickness: Option<i32>,
-    #[serde(default)]
-    pub corner_radius: Option<f32>,
-    #[serde(default)]
-    pub fullscreen: Option<bool>,
-    #[serde(default)]
-    pub idle_hold: Option<IdleHoldPolicy>,
-    #[serde(default)]
-    pub inner_padding: Option<i32>,
-    #[serde(default)]
-    pub inner_padding_color: Option<[f32; 4]>,
-    #[serde(default)]
-    pub padding: Option<i32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -238,4 +215,27 @@ pub struct WindowRule {
     pub criteria: RuleCriteria,
     #[serde(default)]
     pub style: WindowStyle,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
+pub struct WindowStyle {
+    #[serde(default)]
+    pub background: Option<BackgroundSpec>,
+    #[serde(default)]
+    pub border_color: Option<[f32; 4]>,
+    #[serde(default)]
+    pub border_thickness: Option<i32>,
+    #[serde(default)]
+    pub corner_radius: Option<f32>,
+    #[serde(default)]
+    pub fullscreen: Option<bool>,
+    #[serde(default)]
+    pub idle_hold: Option<IdleHoldPolicy>,
+    #[serde(default)]
+    pub inner_padding: Option<i32>,
+    #[serde(default)]
+    pub inner_padding_color: Option<[f32; 4]>,
+    #[serde(default)]
+    pub padding: Option<i32>,
 }

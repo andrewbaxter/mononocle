@@ -24,26 +24,26 @@ use {
     },
 };
 
-fn drain_receiver(rx: &mut broadcast::Receiver<WindowEvent>) -> Vec<WindowEvent> {
-    let mut events = vec![];
-    loop {
-        match rx.try_recv() {
-            Ok(e) => events.push(e),
-            Err(broadcast::error::TryRecvError::Lagged(n)) => {
-                tracing::warn!("Watch receiver lagged by {n} events");
-            },
-            Err(_) => break,
-        }
-    }
-    events
-}
-
 async fn handle_connection(
     mut conn: protocol::ServerConn,
     shared: Arc<Mutex<SharedIpcState>>,
     cmd_tx: Sender<IpcCommand>,
     peer_pid: Option<u32>,
 ) {
+    fn drain_receiver(rx: &mut broadcast::Receiver<WindowEvent>) -> Vec<WindowEvent> {
+        let mut events = vec![];
+        loop {
+            match rx.try_recv() {
+                Ok(e) => events.push(e),
+                Err(broadcast::error::TryRecvError::Lagged(n)) => {
+                    tracing::warn!("Watch receiver lagged by {n} events");
+                },
+                Err(_) => break,
+            }
+        }
+        events
+    }
+
     let mut event_rx: Option<broadcast::Receiver<WindowEvent>> = None;
     loop {
         let req = match conn.recv_req().await {

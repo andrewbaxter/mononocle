@@ -54,7 +54,6 @@ use {
             },
             winit::{
                 WinitEvent,
-                WinitGraphicsBackend,
                 WinitInput,
                 self,
             },
@@ -78,7 +77,6 @@ use {
             wayland_server::{
                 Display,
                 ListeningSocket,
-                protocol::wl_surface::WlSurface,
             },
             winit::platform::pump_events::PumpStatus,
         },
@@ -97,10 +95,7 @@ use {
     std::{
         error::Error,
         fs::read_to_string,
-        path::{
-            Path,
-            PathBuf,
-        },
+        path::PathBuf,
         process::exit,
         sync::{
             Arc,
@@ -119,8 +114,8 @@ use {
 #[derive(Aargvark)]
 struct Args {
     config: Option<PathBuf>,
-    validate: Option<()>,
     default_config: Option<()>,
+    validate: Option<()>,
 }
 
 fn collect_background_specs(config: &Config) -> Vec<&BackgroundSpec> {
@@ -183,61 +178,8 @@ fn main() {
 }
 
 fn run(config: Config) -> Result<(), Box<dyn Error>> {
-    fn load_background(
-        renderer: &mut GlesRenderer,
-        path: &Path,
-    ) -> Result<(TextureBuffer<GlesTexture>, (u32, u32)), Box<dyn Error>> {
-        let rgba = ImageReader::open(path)?.decode()?.to_rgba8();
-        let (w, h) = rgba.dimensions();
-        let buf =
-            TextureBuffer::from_memory(
-                renderer,
-                &rgba.into_raw(),
-                Fourcc::Abgr8888,
-                Size::<i32, Buffer>::from((w as i32, h as i32)),
-                false,
-                1,
-                Transform::Normal,
-                None,
-            )?;
-        Ok((buf, (w, h)))
-    }
-
     fn handle_input(state: &mut State, event: InputEvent<WinitInput>) {
         fn handle_lock_input(state: &mut State, event: InputEvent<WinitInput>) {
-            fn submit_lock_password(state: &mut State) {
-                state.lock_input_state = LockInputState::Verifying;
-                let password = state.lock_password.clone();
-                let socket_path = state.config.unlock_socket.clone();
-                let (tx, rx) = channel();
-                state.lock_verify_rx = Some(rx);
-                spawn(move || {
-                    let rt = RuntimeBuilder::new_current_thread().enable_all().build();
-                    let _ = tx.send(match rt {
-                        Ok(rt) => rt.block_on(async {
-                            let mut client = match unlock_protocol::Client::new(&socket_path).await {
-                                Ok(c) => c,
-                                Err(e) => {
-                                    tracing::error!("Failed to connect to unlock daemon: {e}");
-                                    return false;
-                                },
-                            };
-                            match client.send_req(CheckPassword { password }).await {
-                                Ok(result) => result,
-                                Err(e) => {
-                                    tracing::error!("Unlock IPC error: {e}");
-                                    false
-                                },
-                            }
-                        }),
-                        Err(e) => {
-                            tracing::error!("Failed to create tokio runtime for unlock: {e}");
-                            false
-                        },
-                    });
-                });
-            }
-
             match event {
                 InputEvent::Keyboard { event } => {
                     state.record_lock_activity();
@@ -264,7 +206,39 @@ fn run(config: Config) -> Result<(), Box<dyn Error>> {
                                 if state.lock_input_state == LockInputState::Typing &&
                                     !state.lock_password.is_empty() {
                                     state.lock_last_keystroke = Instant::now();
-                                    submit_lock_password(state);
+                                    state.lock_input_state = LockInputState::Verifying;
+                                    let password = state.lock_password.clone();
+                                    let socket_path = state.config.unlock_socket.clone();
+                                    let (tx, rx) = channel();
+                                    state.lock_verify_rx = Some(rx);
+                                    spawn(move || {
+                                        let rt = RuntimeBuilder::new_current_thread().enable_all().build();
+                                        let _ = tx.send(match rt {
+                                            Ok(rt) => rt.block_on(async {
+                                                let mut client =
+                                                    match unlock_protocol::Client::new(&socket_path).await {
+                                                        Ok(c) => c,
+                                                        Err(e) => {
+                                                            tracing::error!(
+                                                                "Failed to connect to unlock daemon: {e}"
+                                                            );
+                                                            return false;
+                                                        },
+                                                    };
+                                                match client.send_req(CheckPassword { password }).await {
+                                                    Ok(result) => result,
+                                                    Err(e) => {
+                                                        tracing::error!("Unlock IPC error: {e}");
+                                                        false
+                                                    },
+                                                }
+                                            }),
+                                            Err(e) => {
+                                                tracing::error!("Failed to create tokio runtime for unlock: {e}");
+                                                false
+                                            },
+                                        });
+                                    });
                                 }
                             },
                             Keysym::BackSpace => {
@@ -310,31 +284,6 @@ fn run(config: Config) -> Result<(), Box<dyn Error>> {
             }
         }
 
-        fn pointer_focus_surface(
-            state: &State,
-            pos: Point<f64, Logical>,
-        ) -> Option<(WlSurface, Point<f64, Logical>)> {
-            if let Some(origin) = state.current_window_surface_origin() {
-                if let Some(id) = state.current_window_id {
-                    if let Some(mw) = state.windows.iter().find(|w| w.id == id && w.window.alive()) {
-                        let origin_f: Point<f64, Logical> = Point::from((origin.x as f64, origin.y as f64));
-                        if let Some((surface, surface_loc)) =
-                            mw
-                                .window
-                                .surface_under(
-                                    Point::from((pos.x - origin_f.x, pos.y - origin_f.y)),
-                                    WindowSurfaceType::ALL,
-                                ) {
-                            let surf_origin =
-                                Point::from((origin_f.x + surface_loc.x as f64, origin_f.y + surface_loc.y as f64));
-                            return Some((surface, surf_origin));
-                        }
-                    }
-                }
-            }
-            None
-        }
-
         if state.screen_power_state == ScreenPowerState::Locked {
             handle_lock_input(state, event);
             return;
@@ -356,7 +305,30 @@ fn run(config: Config) -> Result<(), Box<dyn Error>> {
             InputEvent::PointerMotionAbsolute { event } => {
                 let pos = event.position_transformed(state.output_size);
                 state.record_mouse_activity(pos);
-                let focus = pointer_focus_surface(state, pos);
+                let focus = 'focus: {
+                    if let Some(origin) = state.current_window_surface_origin() {
+                        if let Some(id) = state.current_window_id {
+                            if let Some(mw) = state.windows.iter().find(|w| w.id == id && w.window.alive()) {
+                                let origin_f: Point<f64, Logical> =
+                                    Point::from((origin.x as f64, origin.y as f64));
+                                if let Some((surface, surface_loc)) =
+                                    mw
+                                        .window
+                                        .surface_under(
+                                            Point::from((pos.x - origin_f.x, pos.y - origin_f.y)),
+                                            WindowSurfaceType::ALL,
+                                        ) {
+                                    let surf_origin =
+                                        Point::from(
+                                            (origin_f.x + surface_loc.x as f64, origin_f.y + surface_loc.y as f64),
+                                        );
+                                    break 'focus Some((surface, surf_origin));
+                                }
+                            }
+                        }
+                    }
+                    None
+                };
                 if let Some(ptr) = state.seat.get_pointer() {
                     ptr.motion(state, focus, &MotionEvent {
                         location: pos,
@@ -385,47 +357,6 @@ fn run(config: Config) -> Result<(), Box<dyn Error>> {
         }
     }
 
-    fn render_frame(
-        state: &mut State,
-        backend: &mut WinitGraphicsBackend<GlesRenderer>,
-    ) -> Result<(), Box<dyn Error>> {
-        let size: Size<i32, Physical> = backend.window_size();
-        let damage = Rectangle::from_size(size);
-        let time_ms = state.start_time.elapsed().as_millis() as u32;
-        {
-            let (renderer, mut framebuffer) = backend.bind()?;
-            let (clear_color, elements, send_frames) = match state.screen_power_state {
-                ScreenPowerState::Active => {
-                    let elems = state.render_elements(renderer);
-                    (Color32F::new(0.0, 0.0, 0.0, 1.0), elems, true)
-                },
-                ScreenPowerState::Locked => {
-                    if state.lock_blanked {
-                        (Color32F::new(0.0, 0.0, 0.0, 1.0), Vec::new(), false)
-                    } else {
-                        let bg = state.config.lock_bg_color;
-                        let elems = state.render_lock_elements();
-                        (Color32F::new(bg[0], bg[1], bg[2], bg[3]), elems, false)
-                    }
-                },
-                ScreenPowerState::Blanked | ScreenPowerState::Off => {
-                    (Color32F::new(0.0, 0.0, 0.0, 1.0), Vec::new(), false)
-                },
-            };
-            let mut frame = renderer.render(&mut framebuffer, size, Transform::Flipped180)?;
-            frame.clear(clear_color, &[damage])?;
-            if !elements.is_empty() {
-                let _ = draw_render_elements::<GlesRenderer, _, _>(&mut frame, 1.0, &elements, &[damage]);
-            }
-            let _ = frame.finish()?;
-            if send_frames {
-                state.send_frames(time_ms);
-            }
-        }
-        backend.submit(Some(&[damage]))?;
-        Ok(())
-    }
-
     let mut display: Display<State> = Display::new()?;
     let ipc_shared = Arc::new(Mutex::new(SharedIpcState::new()));
     let (ipc_cmd_tx, ipc_cmd_rx) = channel();
@@ -445,7 +376,23 @@ fn run(config: Config) -> Result<(), Box<dyn Error>> {
             }
         }
         for path in bg_paths {
-            match load_background(renderer, &path) {
+            let load_result: Result<(TextureBuffer<GlesTexture>, (u32, u32)), Box<dyn Error>> = (|| {
+                let rgba = ImageReader::open(&path)?.decode()?.to_rgba8();
+                let (w, h) = rgba.dimensions();
+                let buf =
+                    TextureBuffer::from_memory(
+                        renderer,
+                        &rgba.into_raw(),
+                        Fourcc::Abgr8888,
+                        Size::<i32, Buffer>::from((w as i32, h as i32)),
+                        false,
+                        1,
+                        Transform::Normal,
+                        None,
+                    )?;
+                Ok((buf, (w, h)))
+            })();
+            match load_result {
                 Ok((buf, dims)) => {
                     state.background_buffers.insert(path.clone(), (buf, dims));
                     tracing::info!("Background loaded from {}", path.display());
@@ -528,6 +475,41 @@ fn run(config: Config) -> Result<(), Box<dyn Error>> {
                 clients.push(client);
             }
         }
-        render_frame(&mut state, &mut backend)?;
+        {
+            let size: Size<i32, Physical> = backend.window_size();
+            let damage = Rectangle::from_size(size);
+            let time_ms = state.start_time.elapsed().as_millis() as u32;
+            {
+                let (renderer, mut framebuffer) = backend.bind()?;
+                let (clear_color, elements, send_frames) = match state.screen_power_state {
+                    ScreenPowerState::Active => {
+                        let elems = state.render_elements(renderer);
+                        (Color32F::new(0.0, 0.0, 0.0, 1.0), elems, true)
+                    },
+                    ScreenPowerState::Locked => {
+                        if state.lock_blanked {
+                            (Color32F::new(0.0, 0.0, 0.0, 1.0), Vec::new(), false)
+                        } else {
+                            let bg = state.config.lock_bg_color;
+                            let elems = state.render_lock_elements();
+                            (Color32F::new(bg[0], bg[1], bg[2], bg[3]), elems, false)
+                        }
+                    },
+                    ScreenPowerState::Blanked | ScreenPowerState::Off => {
+                        (Color32F::new(0.0, 0.0, 0.0, 1.0), Vec::new(), false)
+                    },
+                };
+                let mut frame = renderer.render(&mut framebuffer, size, Transform::Flipped180)?;
+                frame.clear(clear_color, &[damage])?;
+                if !elements.is_empty() {
+                    let _ = draw_render_elements::<GlesRenderer, _, _>(&mut frame, 1.0, &elements, &[damage]);
+                }
+                let _ = frame.finish()?;
+                if send_frames {
+                    state.send_frames(time_ms);
+                }
+            }
+            backend.submit(Some(&[damage]))?;
+        }
     }
 }

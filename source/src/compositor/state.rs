@@ -279,49 +279,6 @@ struct CompiledRule {
     style: WindowStyle,
 }
 
-fn apply_style(params: &mut EffectiveWindowParams, style: &WindowStyle) {
-    if let Some(v) = style.padding {
-        params.padding = v;
-    }
-    if let Some(v) = style.corner_radius {
-        params.corner_radius = v;
-    }
-    if let Some(v) = style.inner_padding {
-        params.inner_padding = v;
-    }
-    if let Some(v) = style.inner_padding_color {
-        params.inner_padding_color = v;
-    }
-    if let Some(v) = style.border_thickness {
-        params.border_thickness = v;
-    }
-    if let Some(v) = style.border_color {
-        params.border_color = v;
-    }
-    if let Some(v) = style.fullscreen {
-        params.fullscreen = v;
-    }
-    if let Some(ref v) = style.idle_hold {
-        params.idle_hold = v.clone();
-    }
-}
-
-fn cover_src_rect(
-    img_w: f64,
-    img_h: f64,
-    screen_w: f64,
-    screen_h: f64,
-    align_x: f64,
-    align_y: f64,
-) -> Rectangle<f64, Logical> {
-    let scale = (screen_w / img_w).max(screen_h / img_h);
-    let src_w = screen_w / scale;
-    let src_h = screen_h / scale;
-    let src_x = (img_w - src_w) * align_x;
-    let src_y = (img_h - src_h) * align_y;
-    Rectangle::new(Point::from((src_x, src_y)), Size::from((src_w, src_h)))
-}
-
 pub struct EffectiveWindowParams {
     pub border_color: [f32; 4],
     pub border_thickness: i32,
@@ -410,16 +367,6 @@ impl Iterator for PidAncestors {
     type Item = u32;
 
     fn next(&mut self) -> Option<u32> {
-        fn parent_pid(pid: u32) -> Option<u32> {
-            let status = read_to_string(format!("/proc/{pid}/status")).ok()?;
-            for line in status.lines() {
-                if let Some(rest) = line.strip_prefix("PPid:") {
-                    return rest.trim().parse().ok();
-                }
-            }
-            None
-        }
-
         let pid = self.next?;
         if pid == 0 {
             self.next = None;
@@ -428,50 +375,18 @@ impl Iterator for PidAncestors {
         self.next = if pid <= 1 {
             None
         } else {
-            parent_pid(pid)
+            (|| {
+                let status = read_to_string(format!("/proc/{pid}/status")).ok()?;
+                for line in status.lines() {
+                    if let Some(rest) = line.strip_prefix("PPid:") {
+                        return rest.trim().parse().ok();
+                    }
+                }
+                None
+            })()
         };
         Some(pid)
     }
-}
-
-fn push_colored_rect(
-    elements: &mut Vec<CompElement>,
-    rect: Rectangle<i32, Logical>,
-    color: [f32; 4],
-    corner_radius: f32,
-    shader: Option<&GlesPixelProgram>,
-) {
-    if rect.size.w <= 0 || rect.size.h <= 0 {
-        return;
-    }
-    if corner_radius > 0.0 {
-        if let Some(prog) = shader {
-            let elem =
-                PixelShaderElement::new(
-                    prog.clone(),
-                    rect,
-                    None,
-                    1.0,
-                    vec![
-                        Uniform::new("u_color", UniformValue::_4f(color[0], color[1], color[2], color[3])),
-                        Uniform::new("u_radius", UniformValue::_1f(corner_radius)),
-                    ],
-                    Kind::Unspecified,
-                );
-            elements.push(CompElement::PixelShader(elem));
-            return;
-        }
-    }
-    let buf = SolidColorBuffer::new(rect.size, Color32F::new(color[0], color[1], color[2], color[3]));
-    let elem =
-        SolidColorRenderElement::from_buffer(
-            &buf,
-            Point::<i32, Physical>::from((rect.loc.x, rect.loc.y)),
-            1.0f64,
-            1.0,
-            Kind::Unspecified,
-        );
-    elements.push(CompElement::Solid(elem));
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -529,11 +444,33 @@ pub struct State {
 }
 
 impl State {
+    pub fn active_background_spec(&self) -> Option<&BackgroundSpec> {
+        if let Some(id) = self.current_window_id {
+            if let Some(mw) = self.windows.iter().find(|w| w.id == id && w.window.alive()) {
+                let title = mw.title();
+                let app_id = mw.app_id();
+                for cr in &self.compiled_rules {
+                    let matched =
+                        cr.criteria.as_ref().map_or(false, |c| c.matches(title.as_deref(), app_id.as_deref()));
+                    if matched {
+                        if let Some(spec) = &cr.style.background {
+                            return Some(spec);
+                        }
+                        break;
+                    }
+                }
+            }
+        }
+        if let Some(spec) = self.config.desktop_backgrounds.get(&self.current_desktop) {
+            return Some(spec);
+        }
+        self.config.default_style.background.as_ref()
+    }
+
     pub fn associate_current_window_pid(&mut self) {
         let Some(id) = self.current_window_id else {
             return
         };
-        let desktop = self.current_desktop;
         let pid =
             self
                 .windows
@@ -542,7 +479,7 @@ impl State {
                 .and_then(|mw| mw.window.toplevel())
                 .and_then(|t| self.pid_for_surface(t.wl_surface()));
         if let Some(pid) = pid {
-            self.associate_pid_tree_with_desktop(pid, desktop);
+            self.associate_pid_tree_with_desktop(pid, self.current_desktop);
         }
     }
 
@@ -713,6 +650,33 @@ impl State {
         app_id: Option<&str>,
         is_fullscreen: bool,
     ) -> EffectiveWindowParams {
+        fn apply_style(params: &mut EffectiveWindowParams, style: &WindowStyle) {
+            if let Some(v) = style.padding {
+                params.padding = v;
+            }
+            if let Some(v) = style.corner_radius {
+                params.corner_radius = v;
+            }
+            if let Some(v) = style.inner_padding {
+                params.inner_padding = v;
+            }
+            if let Some(v) = style.inner_padding_color {
+                params.inner_padding_color = v;
+            }
+            if let Some(v) = style.border_thickness {
+                params.border_thickness = v;
+            }
+            if let Some(v) = style.border_color {
+                params.border_color = v;
+            }
+            if let Some(v) = style.fullscreen {
+                params.fullscreen = v;
+            }
+            if let Some(ref v) = style.idle_hold {
+                params.idle_hold = v.clone();
+            }
+        }
+
         let mut params = EffectiveWindowParams {
             padding: default_padding(),
             corner_radius: 0.0,
@@ -745,6 +709,20 @@ impl State {
         self.effective_window_params(mw.title().as_deref(), mw.app_id().as_deref(), mw.fullscreen)
     }
 
+    pub fn ensure_desktop(&mut self, desktop: u32) {
+        if self.output_states.iter().any(|os| os.desktops.contains(&desktop)) {
+            return;
+        }
+        let target = if self.current_output < self.output_states.len() {
+            self.current_output
+        } else {
+            0
+        };
+        if let Some(os) = self.output_states.get_mut(target) {
+            os.desktops.push(desktop);
+        }
+    }
+
     pub fn global_current_window_id(&self) -> Option<u64> {
         self.output_states.get(self.current_output).and_then(|os| os.current_window_id)
     }
@@ -774,8 +752,7 @@ impl State {
     }
 
     pub fn kill_window(&mut self, id: Option<u64>) {
-        let target = id.or(self.current_window_id);
-        if let Some(wid) = target {
+        if let Some(wid) = id.or(self.current_window_id) {
             if let Some(mw) = self.windows.iter().find(|w| w.id == wid) {
                 if let Some(t) = mw.window.toplevel() {
                     t.send_close();
@@ -1033,9 +1010,8 @@ impl State {
             return
         };
         let params = self.effective_window_params_for(mw);
-        let old_fullscreen = mw.fullscreen;
         let new_fullscreen = params.fullscreen;
-        if old_fullscreen != new_fullscreen {
+        if mw.fullscreen != new_fullscreen {
             if let Some(mw) = self.windows.iter_mut().find(|w| w.id == wid) {
                 mw.fullscreen = new_fullscreen;
             }
@@ -1098,7 +1074,6 @@ impl State {
     }
 
     fn remove_window(&mut self, id: u64) {
-        let window_desktop = self.windows.iter().find(|w| w.id == id).map(|w| w.desktop);
         if self.current_window_id == Some(id) {
             let next =
                 self
@@ -1129,7 +1104,7 @@ impl State {
             }
             self.push_event(WindowEvent::ShownWindowChanged { window_id: self.current_window_id });
         }
-        if let Some(desktop) = window_desktop {
+        if let Some(desktop) = self.windows.iter().find(|w| w.id == id).map(|w| w.desktop) {
             let output_idx = self.output_for_desktop(desktop);
             if let Some(os) = self.output_states.get_mut(output_idx) {
                 if os.current_window_id == Some(id) {
@@ -1149,6 +1124,62 @@ impl State {
     }
 
     pub fn render_elements(&self, renderer: &mut GlesRenderer) -> Vec<CompElement> {
+        fn push_colored_rect(
+            elements: &mut Vec<CompElement>,
+            rect: Rectangle<i32, Logical>,
+            color: [f32; 4],
+            corner_radius: f32,
+            shader: Option<&GlesPixelProgram>,
+        ) {
+            if rect.size.w <= 0 || rect.size.h <= 0 {
+                return;
+            }
+            if corner_radius > 0.0 {
+                if let Some(prog) = shader {
+                    let elem =
+                        PixelShaderElement::new(
+                            prog.clone(),
+                            rect,
+                            None,
+                            1.0,
+                            vec![
+                                Uniform::new("u_color", UniformValue::_4f(color[0], color[1], color[2], color[3])),
+                                Uniform::new("u_radius", UniformValue::_1f(corner_radius)),
+                            ],
+                            Kind::Unspecified,
+                        );
+                    elements.push(CompElement::PixelShader(elem));
+                    return;
+                }
+            }
+            let buf = SolidColorBuffer::new(rect.size, Color32F::new(color[0], color[1], color[2], color[3]));
+            let elem =
+                SolidColorRenderElement::from_buffer(
+                    &buf,
+                    Point::<i32, Physical>::from((rect.loc.x, rect.loc.y)),
+                    1.0f64,
+                    1.0,
+                    Kind::Unspecified,
+                );
+            elements.push(CompElement::Solid(elem));
+        }
+
+        fn cover_src_rect(
+            img_w: f64,
+            img_h: f64,
+            screen_w: f64,
+            screen_h: f64,
+            align_x: f64,
+            align_y: f64,
+        ) -> Rectangle<f64, Logical> {
+            let scale = (screen_w / img_w).max(screen_h / img_h);
+            let src_w = screen_w / scale;
+            let src_h = screen_h / scale;
+            let src_x = (img_w - src_w) * align_x;
+            let src_y = (img_h - src_h) * align_y;
+            Rectangle::new(Point::from((src_x, src_y)), Size::from((src_w, src_h)))
+        }
+
         let mut elements: Vec<CompElement> = Vec::new();
         {
             let layer_map = layer_map_for_output(&self.output);
@@ -1370,20 +1401,6 @@ impl State {
         }
     }
 
-    pub fn ensure_desktop(&mut self, desktop: u32) {
-        if self.output_states.iter().any(|os| os.desktops.contains(&desktop)) {
-            return;
-        }
-        let target = if self.current_output < self.output_states.len() {
-            self.current_output
-        } else {
-            0
-        };
-        if let Some(os) = self.output_states.get_mut(target) {
-            os.desktops.push(desktop);
-        }
-    }
-
     pub fn show_desktop(&mut self, desktop: u32, output: Option<&str>) {
         self.ensure_desktop(desktop);
         let target_output = self.output_for_desktop(desktop);
@@ -1538,8 +1555,7 @@ impl State {
     }
 
     pub fn toggle_fullscreen(&mut self, id: Option<u64>) {
-        let target = id.or(self.current_window_id);
-        if let Some(wid) = target {
+        if let Some(wid) = id.or(self.current_window_id) {
             if let Some(mw) = self.windows.iter_mut().find(|w| w.id == wid) {
                 mw.fullscreen = !mw.fullscreen;
             }
@@ -1565,29 +1581,6 @@ impl State {
                 }
             }
         }
-    }
-
-    pub fn active_background_spec(&self) -> Option<&BackgroundSpec> {
-        if let Some(id) = self.current_window_id {
-            if let Some(mw) = self.windows.iter().find(|w| w.id == id && w.window.alive()) {
-                let title = mw.title();
-                let app_id = mw.app_id();
-                for cr in &self.compiled_rules {
-                    let matched =
-                        cr.criteria.as_ref().map_or(false, |c| c.matches(title.as_deref(), app_id.as_deref()));
-                    if matched {
-                        if let Some(spec) = &cr.style.background {
-                            return Some(spec);
-                        }
-                        break;
-                    }
-                }
-            }
-        }
-        if let Some(spec) = self.config.desktop_backgrounds.get(&self.current_desktop) {
-            return Some(spec);
-        }
-        self.config.default_style.background.as_ref()
     }
 
     pub fn window_content_area_for(&self, params: &EffectiveWindowParams) -> Rectangle<i32, Logical> {

@@ -37,10 +37,6 @@ enum Command {
     ToggleFullscreen(ToggleFullscreenCliArgs),
 }
 
-fn default_socket() -> PathBuf {
-    PathBuf::from("/tmp/mononocle.sock")
-}
-
 #[derive(Aargvark)]
 struct KillArgs {
     id: Option<u64>,
@@ -49,7 +45,7 @@ struct KillArgs {
 #[tokio::main(flavor = "current_thread")]
 async fn main() {
     let args: Args = vark();
-    if let Err(e) = run(args.socket.unwrap_or_else(default_socket), args.command).await {
+    if let Err(e) = run(args.socket.unwrap_or_else(|| PathBuf::from("/tmp/mononocle.sock")), args.command).await {
         eprintln!("Error: {e}");
         exit(1);
     }
@@ -59,8 +55,12 @@ async fn run(socket: PathBuf, command: Command) -> Result<(), String> {
     match command {
         Command::ListWindows => {
             let mut client = protocol::Client::new(&socket).await?;
-            let resp = client.send_req(ListWindows).await?;
-            println!("{}", to_string(&resp).map_err(|e| format!("Failed to serialize response: {e}"))?);
+            println!(
+                "{}",
+                to_string(
+                    &client.send_req(ListWindows).await?,
+                ).map_err(|e| format!("Failed to serialize response: {e}"))?
+            );
         },
         Command::Listen => {
             let mut client = protocol::Client::new(&socket).await?;

@@ -35,24 +35,6 @@ unsafe extern "C" {
 }
 
 async fn handle_connection(mut conn: unlock_protocol::ServerConn, enc_pw: String) {
-    fn verify_password(password: &str, enc_pw: &str) -> bool {
-        let password_c = match CString::new(password) {
-            Ok(c) => c,
-            Err(_) => return false,
-        };
-        let enc_c = match CString::new(enc_pw) {
-            Ok(c) => c,
-            Err(_) => return false,
-        };
-        unsafe {
-            let result = crypt(password_c.as_ptr(), enc_c.as_ptr());
-            if result.is_null() {
-                return false;
-            }
-            CStr::from_ptr(result).to_bytes() == enc_pw.as_bytes()
-        }
-    }
-
     loop {
         let req = match conn.recv_req().await {
             Ok(Some(r)) => r,
@@ -64,7 +46,23 @@ async fn handle_connection(mut conn: unlock_protocol::ServerConn, enc_pw: String
         };
         let resp = match req {
             unlock_protocol::ServerReq::CheckPassword(respond, check) => {
-                let success = verify_password(&check.password, &enc_pw);
+                let success = 'verify: {
+                    let password_c = match CString::new(check.password.as_str()) {
+                        Ok(c) => c,
+                        Err(_) => break 'verify false,
+                    };
+                    let enc_c = match CString::new(enc_pw.as_str()) {
+                        Ok(c) => c,
+                        Err(_) => break 'verify false,
+                    };
+                    unsafe {
+                        let result = crypt(password_c.as_ptr(), enc_c.as_ptr());
+                        if result.is_null() {
+                            break 'verify false;
+                        }
+                        CStr::from_ptr(result).to_bytes() == enc_pw.as_bytes()
+                    }
+                };
                 if !success {
                     tracing::debug!("Password verification failed");
                     sleep(Duration::from_secs(2)).await;
@@ -85,55 +83,46 @@ fn main() {
     } else {
         tracing_subscriber::fmt().init();
     }
-
-    fn read_shadow_hash() -> String {
-        unsafe {
-            let uid = getuid();
-            let pw = getpwuid(uid);
-            if pw.is_null() {
-                eprintln!("getpwuid failed");
-                exit(1);
-            }
-            let pw_passwd = CStr::from_ptr((*pw).pw_passwd).to_string_lossy().into_owned();
-            let pw_name = CStr::from_ptr((*pw).pw_name).to_string_lossy().into_owned();
-            let enc = if pw_passwd == "x" {
-                let name_c = CString::new(pw_name.as_str()).expect("CString");
-                let sp = getspnam(name_c.as_ptr());
-                if sp.is_null() {
-                    eprintln!("getspnam failed for user {pw_name} — is this process running as root?");
-                    exit(1);
-                }
-                CStr::from_ptr((*sp).sp_pwdp).to_string_lossy().into_owned()
-            } else {
-                pw_passwd
-            };
-            tracing::debug!("Prepared to authorize user {pw_name}");
-            enc
+    let enc_pw = unsafe {
+        let uid = getuid();
+        let pw = getpwuid(uid);
+        if pw.is_null() {
+            eprintln!("getpwuid failed");
+            exit(1);
         }
-    }
-
-    fn drop_privileges() {
-        unsafe {
-            let gid = getgid();
-            let uid = getuid();
-            if setgid(gid) != 0 {
-                eprintln!("Unable to drop root (setgid)");
+        let pw_passwd = CStr::from_ptr((*pw).pw_passwd).to_string_lossy().into_owned();
+        let pw_name = CStr::from_ptr((*pw).pw_name).to_string_lossy().into_owned();
+        let enc = if pw_passwd == "x" {
+            let name_c = CString::new(pw_name.as_str()).expect("CString");
+            let sp = getspnam(name_c.as_ptr());
+            if sp.is_null() {
+                eprintln!("getspnam failed for user {pw_name} — is this process running as root?");
                 exit(1);
             }
-            if setuid(uid) != 0 {
-                eprintln!("Unable to drop root (setuid)");
-                exit(1);
-            }
-            if setuid(0) != -1 || setgid(0) != -1 {
-                eprintln!("Unable to drop root (could restore)");
-                exit(1);
-            }
-        }
-    }
-
-    let enc_pw = read_shadow_hash();
+            CStr::from_ptr((*sp).sp_pwdp).to_string_lossy().into_owned()
+        } else {
+            pw_passwd
+        };
+        tracing::debug!("Prepared to authorize user {pw_name}");
+        enc
+    };
     tracing::info!("Read password hash, dropping privileges");
-    drop_privileges();
+    unsafe {
+        let gid = getgid();
+        let uid = getuid();
+        if setgid(gid) != 0 {
+            eprintln!("Unable to drop root (setgid)");
+            exit(1);
+        }
+        if setuid(uid) != 0 {
+            eprintln!("Unable to drop root (setuid)");
+            exit(1);
+        }
+        if setuid(0) != -1 || setgid(0) != -1 {
+            eprintln!("Unable to drop root (could restore)");
+            exit(1);
+        }
+    }
     tracing::info!("Privileges dropped, starting IPC server");
     RuntimeBuilder::new_current_thread()
         .enable_all()

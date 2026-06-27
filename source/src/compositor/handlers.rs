@@ -384,12 +384,10 @@ impl XdgShellHandler for State {
                 match self.popup_manager.grab_popup::<State>(root, popup, &self.seat, serial) {
                     Ok(grab) => {
                         if let Some(kb) = self.seat.get_keyboard() {
-                            let kb_grab = PopupKeyboardGrab::new(&grab);
-                            kb.set_grab(self, kb_grab, serial);
+                            kb.set_grab(self, PopupKeyboardGrab::new(&grab), serial);
                         }
                         if let Some(ptr) = self.seat.get_pointer() {
-                            let ptr_grab = PopupPointerGrabSkipFirstRelease::new(&grab);
-                            ptr.set_grab(self, ptr_grab, serial, Focus::Keep);
+                            ptr.set_grab(self, PopupPointerGrabSkipFirstRelease::new(&grab), serial, Focus::Keep);
                         }
                     },
                     Err(err) => {
@@ -404,9 +402,8 @@ impl XdgShellHandler for State {
     }
 
     fn new_popup(&mut self, surface: PopupSurface, positioner: PositionerState) {
-        let geo = positioner.get_geometry();
         surface.with_pending_state(|state| {
-            state.geometry = geo;
+            state.geometry = positioner.get_geometry();
         });
         surface.send_configure().ok();
         self.popup_manager.track_popup(PopupKind::Xdg(surface)).ok();
