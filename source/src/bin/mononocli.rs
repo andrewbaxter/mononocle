@@ -12,75 +12,46 @@ use {
         Watch,
         protocol,
     },
-    std::path::PathBuf,
+    serde_json::to_string,
+    std::{
+        path::PathBuf,
+        process::exit,
+    },
 };
 
 #[derive(Aargvark)]
 struct Args {
-    /// IPC socket path.
+    command: Command,
     #[vark(flag = "--socket", flag = "-s")]
     socket: Option<PathBuf>,
-    command: Command,
 }
 
 #[derive(Aargvark)]
 enum Command {
-    /// List all windows and their properties.
-    ListWindows,
-    /// Listen for window events and print them as they arrive.
-    Listen,
-    /// Show desktop by number (0-indexed).
-    ShowDesktop(ShowDesktopCliArgs),
-    /// Show window by id.
-    ShowWindow(u64),
-    /// Kill a window. Kills focused window if no id given.
     Kill(KillArgs),
-    /// Toggle fullscreen for a window. Toggles focused window if no id given.
-    ToggleFullscreen(ToggleFullscreenCliArgs),
-    /// Associate the caller's PID tree with a desktop. Uses current desktop if not specified.
+    Listen,
+    ListWindows,
     SetDesktop(SetDesktopCliArgs),
-}
-
-#[derive(Aargvark)]
-struct ShowDesktopCliArgs {
-    /// Desktop number to switch to (0-indexed).
-    desktop: u32,
-    /// Target output by its configured id. If not specified, the output that
-    /// owns the desktop is used.
-    #[vark(flag = "--output", flag = "-o")]
-    output: Option<String>,
-}
-
-#[derive(Aargvark)]
-struct KillArgs {
-    /// Window id to kill. Kills the focused window if not specified.
-    id: Option<u64>,
-}
-
-#[derive(Aargvark)]
-struct ToggleFullscreenCliArgs {
-    /// Window id to toggle fullscreen. Toggles the focused window if not specified.
-    id: Option<u64>,
-}
-
-#[derive(Aargvark)]
-struct SetDesktopCliArgs {
-    /// Desktop number to associate with. Uses current desktop if not specified.
-    desktop: Option<u32>,
+    ShowDesktop(ShowDesktopCliArgs),
+    ShowWindow(u64),
+    ToggleFullscreen(ToggleFullscreenCliArgs),
 }
 
 fn default_socket() -> PathBuf {
     PathBuf::from("/tmp/mononocle.sock")
 }
 
+#[derive(Aargvark)]
+struct KillArgs {
+    id: Option<u64>,
+}
+
 #[tokio::main(flavor = "current_thread")]
 async fn main() {
     let args: Args = vark();
-    let socket = args.socket.unwrap_or_else(default_socket);
-    let result = run(socket, args.command).await;
-    if let Err(e) = result {
+    if let Err(e) = run(args.socket.unwrap_or_else(default_socket), args.command).await {
         eprintln!("Error: {e}");
-        std::process::exit(1);
+        exit(1);
     }
 }
 
@@ -89,69 +60,57 @@ async fn run(socket: PathBuf, command: Command) -> Result<(), String> {
         Command::ListWindows => {
             let mut client = protocol::Client::new(&socket).await?;
             let resp = client.send_req(ListWindows).await?;
-            println!("lock_inhibited={}", resp.lock_inhibited);
-            if resp.windows.is_empty() {
-                println!("No windows.");
-            } else {
-                for w in resp.windows {
-                    let visible = if w.is_visible {
-                        " [visible]"
-                    } else {
-                        ""
-                    };
-                    let title = w.title.as_deref().unwrap_or("<no title>");
-                    let app_id = w.app_id.as_deref().unwrap_or("<no app-id>");
-                    println!("id={} desktop={} app_id={} title={}{visible}", w.id, w.desktop, app_id, title);
-                }
-            }
+            println!("{}", to_string(&resp).map_err(|e| format!("Failed to serialize response: {e}"))?);
         },
         Command::Listen => {
             let mut client = protocol::Client::new(&socket).await?;
             loop {
                 let events = client.send_req(Watch).await?;
                 for event in events {
-                    let json = serde_json::to_string(&event).unwrap_or_else(|_| "<serialize error>".into());
-                    println!("{json}");
+                    println!("{}", to_string(&event).map_err(|e| format!("Failed to serialize event: {e}"))?);
                 }
             }
         },
         Command::ShowDesktop(args) => {
             let mut client = protocol::Client::new(&socket).await?;
-            client.send_req(ShowDesktopArgs { desktop: args.desktop, output: args.output.clone() }).await?;
-            match args.output {
-                Some(ref o) => println!("Switched to desktop {} on output {}.", args.desktop, o),
-                None => println!("Switched to desktop {}.", args.desktop),
-            }
+            client.send_req(ShowDesktopArgs {
+                desktop: args.desktop,
+                output: args.output,
+            }).await?;
         },
         Command::ShowWindow(id) => {
             let mut client = protocol::Client::new(&socket).await?;
             client.send_req(id).await?;
-            println!("Showed window {id}.");
         },
         Command::Kill(args) => {
             let mut client = protocol::Client::new(&socket).await?;
             client.send_req(KillWindowArgs { id: args.id }).await?;
-            match args.id {
-                Some(id) => println!("Sent kill to window {id}."),
-                None => println!("Sent kill to focused window."),
-            }
         },
         Command::ToggleFullscreen(args) => {
             let mut client = protocol::Client::new(&socket).await?;
             client.send_req(ToggleFullscreenArgs { id: args.id }).await?;
-            match args.id {
-                Some(id) => println!("Toggled fullscreen for window {id}."),
-                None => println!("Toggled fullscreen for focused window."),
-            }
         },
         Command::SetDesktop(args) => {
             let mut client = protocol::Client::new(&socket).await?;
             client.send_req(SetDesktopArgs { desktop: args.desktop }).await?;
-            match args.desktop {
-                Some(d) => println!("Associated PID tree with desktop {d}."),
-                None => println!("Associated PID tree with current desktop."),
-            }
         },
     }
     Ok(())
+}
+
+#[derive(Aargvark)]
+struct SetDesktopCliArgs {
+    desktop: Option<u32>,
+}
+
+#[derive(Aargvark)]
+struct ShowDesktopCliArgs {
+    desktop: u32,
+    #[vark(flag = "--output", flag = "-o")]
+    output: Option<String>,
+}
+
+#[derive(Aargvark)]
+struct ToggleFullscreenCliArgs {
+    id: Option<u64>,
 }
