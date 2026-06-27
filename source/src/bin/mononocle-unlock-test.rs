@@ -15,7 +15,7 @@ use {
     },
 };
 
-const DEFAULT_SOCKET: &str = "/tmp/mononocle-unlock.sock";
+const DEFAULT_SOCKET: &str = "/run/mononocle-unlock.sock";
 
 async fn handle_connection(mut conn: unlock_protocol::ServerConn, expected: String) {
     loop {

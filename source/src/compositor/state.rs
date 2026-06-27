@@ -3,12 +3,16 @@ use {
         compositor::{
             config::{
                 BackgroundSize,
+                BackgroundSpec,
                 Config,
                 IdleHoldPolicy,
                 OutputCriteria,
                 OutputPosition,
                 RuleCriteria,
-                WindowRule,
+                WindowStyle,
+                default_border_color,
+                default_inner_padding_color,
+                default_padding,
             },
             ipc_server::{
                 IpcCommand,
@@ -119,6 +123,7 @@ use {
             HashSet,
         },
         fs::read_to_string,
+        path::PathBuf,
         sync::{
             Arc,
             Mutex,
@@ -271,7 +276,34 @@ impl CompiledOutputCriteria {
 
 struct CompiledRule {
     criteria: Option<CompiledCriteria>,
-    rule: WindowRule,
+    style: WindowStyle,
+}
+
+fn apply_style(params: &mut EffectiveWindowParams, style: &WindowStyle) {
+    if let Some(v) = style.padding {
+        params.padding = v;
+    }
+    if let Some(v) = style.corner_radius {
+        params.corner_radius = v;
+    }
+    if let Some(v) = style.inner_padding {
+        params.inner_padding = v;
+    }
+    if let Some(v) = style.inner_padding_color {
+        params.inner_padding_color = v;
+    }
+    if let Some(v) = style.border_thickness {
+        params.border_thickness = v;
+    }
+    if let Some(v) = style.border_color {
+        params.border_color = v;
+    }
+    if let Some(v) = style.fullscreen {
+        params.fullscreen = v;
+    }
+    if let Some(ref v) = style.idle_hold {
+        params.idle_hold = v.clone();
+    }
 }
 
 fn cover_src_rect(
@@ -452,7 +484,7 @@ pub enum ScreenPowerState {
 
 pub struct State {
     pub activity_mouse_pos: Point<f64, Logical>,
-    pub background_buffer: Option<(TextureBuffer<GlesTexture>, (u32, u32))>,
+    pub background_buffers: HashMap<PathBuf, (TextureBuffer<GlesTexture>, (u32, u32))>,
     compiled_output_configs: Vec<CompiledOutputConfig>,
     compiled_rules: Vec<CompiledRule>,
     pub compositor_state: CompositorState,
@@ -682,42 +714,20 @@ impl State {
         is_fullscreen: bool,
     ) -> EffectiveWindowParams {
         let mut params = EffectiveWindowParams {
-            padding: self.config.padding,
-            corner_radius: self.config.corner_radius,
-            inner_padding: self.config.inner_padding,
-            inner_padding_color: self.config.inner_padding_color,
-            border_thickness: self.config.border_thickness,
-            border_color: self.config.border_color,
+            padding: default_padding(),
+            corner_radius: 0.0,
+            inner_padding: 0,
+            inner_padding_color: default_inner_padding_color(),
+            border_thickness: 0,
+            border_color: default_border_color(),
             fullscreen: false,
             idle_hold: IdleHoldPolicy::Default,
         };
+        apply_style(&mut params, &self.config.default_style);
         for cr in &self.compiled_rules {
             let matched = cr.criteria.as_ref().map_or(false, |c| c.matches(title, app_id));
             if matched {
-                if let Some(v) = cr.rule.padding {
-                    params.padding = v;
-                }
-                if let Some(v) = cr.rule.corner_radius {
-                    params.corner_radius = v;
-                }
-                if let Some(v) = cr.rule.inner_padding {
-                    params.inner_padding = v;
-                }
-                if let Some(v) = cr.rule.inner_padding_color {
-                    params.inner_padding_color = v;
-                }
-                if let Some(v) = cr.rule.border_thickness {
-                    params.border_thickness = v;
-                }
-                if let Some(v) = cr.rule.border_color {
-                    params.border_color = v;
-                }
-                if let Some(v) = cr.rule.fullscreen {
-                    params.fullscreen = v;
-                }
-                if let Some(ref v) = cr.rule.idle_hold {
-                    params.idle_hold = v.clone();
-                }
+                apply_style(&mut params, &cr.style);
                 break;
             }
         }
@@ -855,7 +865,7 @@ impl State {
                 let criteria = compile_criteria(&rule.criteria);
                 CompiledRule {
                     criteria,
-                    rule: rule.clone(),
+                    style: rule.style.clone(),
                 }
             }).collect::<Vec<_>>()
         };
@@ -926,7 +936,7 @@ impl State {
             current_desktop: 0,
             layer_surfaces: Vec::new(),
             pid_desktop: HashMap::new(),
-            background_buffer: None,
+            background_buffers: HashMap::new(),
             rounded_rect_shader: None,
             lock_shader: None,
             ipc_shared,
@@ -946,7 +956,7 @@ impl State {
             lock_circle_hidden_until: None,
             output_states: vec![OutputState {
                 id: None,
-                desktops: (0 .. config.desktops).collect(),
+                desktops: vec![0],
                 current_desktop: 0,
                 current_window_id: None,
                 position: OutputPosition::None,
@@ -1006,6 +1016,7 @@ impl State {
                 },
                 IpcCommand::SetDesktop { pid, desktop } => {
                     let d = desktop.unwrap_or(self.current_desktop);
+                    self.ensure_desktop(d);
                     self.associate_pid_tree_with_desktop(pid, d);
                 },
             }
@@ -1250,37 +1261,39 @@ impl State {
                 }
             }
         }
-        if let Some((bg, (img_w, img_h))) = &self.background_buffer {
-            let screen_w = self.output_size.w as f64;
-            let screen_h = self.output_size.h as f64;
-            let img_w = *img_w as f64;
-            let img_h = *img_h as f64;
-            let [align_x, align_y] = self.config.background_align;
-            let src_rect = match self.config.background_size {
-                BackgroundSize::Cover => cover_src_rect(img_w, img_h, screen_w, screen_h, align_x, align_y),
-                BackgroundSize::MinCover => {
-                    if img_w >= screen_w && img_h >= screen_h {
-                        let src_x = (img_w - screen_w) * align_x;
-                        let src_y = (img_h - screen_h) * align_y;
-                        Rectangle::<f64, Logical>::new(
-                            Point::from((src_x, src_y)),
-                            Size::from((screen_w, screen_h)),
-                        )
-                    } else {
-                        cover_src_rect(img_w, img_h, screen_w, screen_h, align_x, align_y)
-                    }
-                },
-            };
-            elements.push(
-                TextureRenderElement::from_texture_buffer(
-                    Point::from((0.0f64, 0.0f64)),
-                    bg,
-                    None,
-                    Some(src_rect),
-                    Some(self.output_size),
-                    Kind::Unspecified,
-                ).into(),
-            );
+        if let Some(spec) = self.active_background_spec() {
+            if let Some((bg, (img_w, img_h))) = self.background_buffers.get(&spec.path) {
+                let screen_w = self.output_size.w as f64;
+                let screen_h = self.output_size.h as f64;
+                let img_w = *img_w as f64;
+                let img_h = *img_h as f64;
+                let [align_x, align_y] = spec.align;
+                let src_rect = match spec.size {
+                    BackgroundSize::Cover => cover_src_rect(img_w, img_h, screen_w, screen_h, align_x, align_y),
+                    BackgroundSize::MinCover => {
+                        if img_w >= screen_w && img_h >= screen_h {
+                            let src_x = (img_w - screen_w) * align_x;
+                            let src_y = (img_h - screen_h) * align_y;
+                            Rectangle::<f64, Logical>::new(
+                                Point::from((src_x, src_y)),
+                                Size::from((screen_w, screen_h)),
+                            )
+                        } else {
+                            cover_src_rect(img_w, img_h, screen_w, screen_h, align_x, align_y)
+                        }
+                    },
+                };
+                elements.push(
+                    TextureRenderElement::from_texture_buffer(
+                        Point::from((0.0f64, 0.0f64)),
+                        bg,
+                        None,
+                        Some(src_rect),
+                        Some(self.output_size),
+                        Kind::Unspecified,
+                    ).into(),
+                );
+            }
         }
         elements
     }
@@ -1357,7 +1370,22 @@ impl State {
         }
     }
 
+    pub fn ensure_desktop(&mut self, desktop: u32) {
+        if self.output_states.iter().any(|os| os.desktops.contains(&desktop)) {
+            return;
+        }
+        let target = if self.current_output < self.output_states.len() {
+            self.current_output
+        } else {
+            0
+        };
+        if let Some(os) = self.output_states.get_mut(target) {
+            os.desktops.push(desktop);
+        }
+    }
+
     pub fn show_desktop(&mut self, desktop: u32, output: Option<&str>) {
+        self.ensure_desktop(desktop);
         let target_output = self.output_for_desktop(desktop);
         if let Some(id) = output {
             match self.output_index_by_id(id) {
@@ -1539,16 +1567,27 @@ impl State {
         }
     }
 
-    pub fn window_area(&self) -> Rectangle<i32, Logical> {
-        let layer_map = layer_map_for_output(&self.output);
-        let zone = layer_map.non_exclusive_zone();
-        let p = self.config.padding;
-        let inset = self.config.border_thickness + self.config.inner_padding;
-        let total = p + inset;
-        Rectangle::new(
-            Point::from((zone.loc.x + total, zone.loc.y + total)),
-            Size::from(((zone.size.w - 2 * total).max(1), (zone.size.h - 2 * total).max(1))),
-        )
+    pub fn active_background_spec(&self) -> Option<&BackgroundSpec> {
+        if let Some(id) = self.current_window_id {
+            if let Some(mw) = self.windows.iter().find(|w| w.id == id && w.window.alive()) {
+                let title = mw.title();
+                let app_id = mw.app_id();
+                for cr in &self.compiled_rules {
+                    let matched =
+                        cr.criteria.as_ref().map_or(false, |c| c.matches(title.as_deref(), app_id.as_deref()));
+                    if matched {
+                        if let Some(spec) = &cr.style.background {
+                            return Some(spec);
+                        }
+                        break;
+                    }
+                }
+            }
+        }
+        if let Some(spec) = self.config.desktop_backgrounds.get(&self.current_desktop) {
+            return Some(spec);
+        }
+        self.config.default_style.background.as_ref()
     }
 
     pub fn window_content_area_for(&self, params: &EffectiveWindowParams) -> Rectangle<i32, Logical> {

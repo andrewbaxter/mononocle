@@ -417,6 +417,7 @@ impl XdgShellHandler for State {
         let window = Window::new_wayland_window(surface.clone());
         let client_pid = self.pid_for_surface(surface.wl_surface());
         let desktop = client_pid.and_then(|pid| self.desktop_for_pid(pid)).unwrap_or(self.current_desktop);
+        self.ensure_desktop(desktop);
         let title = with_states(surface.wl_surface(), |states| {
             states
                 .data_map

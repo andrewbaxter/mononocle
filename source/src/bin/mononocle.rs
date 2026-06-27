@@ -6,7 +6,10 @@ use {
     image::ImageReader,
     mononocle::{
         compositor::{
-            config::Config,
+            config::{
+                BackgroundSpec,
+                Config,
+            },
             ipc_server::{
                 SharedIpcState,
                 spawn_ipc_server,
@@ -117,6 +120,23 @@ use {
 struct Args {
     config: Option<PathBuf>,
     validate: Option<()>,
+    default_config: Option<()>,
+}
+
+fn collect_background_specs(config: &Config) -> Vec<&BackgroundSpec> {
+    let mut specs: Vec<&BackgroundSpec> = Vec::new();
+    if let Some(spec) = &config.default_style.background {
+        specs.push(spec);
+    }
+    for spec in config.desktop_backgrounds.values() {
+        specs.push(spec);
+    }
+    for rule in &config.window_rules {
+        if let Some(spec) = &rule.style.background {
+            specs.push(spec);
+        }
+    }
+    specs
 }
 
 fn main() {
@@ -126,6 +146,11 @@ fn main() {
         tracing_subscriber::fmt().init();
     }
     let args: Args = vark();
+    if args.default_config.is_some() {
+        let json = serde_json::to_string_pretty(&Config::default()).expect("serialize default config");
+        println!("{json}");
+        return;
+    }
     let config: Config = if let Some(path) = args.config {
         serde_json::from_str(
             &read_to_string(&path).unwrap_or_else(|e| panic!("Failed to read config {}: {e}", path.display())),
@@ -138,9 +163,9 @@ fn main() {
         exit(1);
     }
     if args.validate.is_some() {
-        if let Some(bg) = &config.background {
-            if !bg.exists() {
-                eprintln!("Config validation failed: background path does not exist: {}", bg.display());
+        for spec in collect_background_specs(&config) {
+            if !spec.path.exists() {
+                eprintln!("Config validation failed: background path does not exist: {}", spec.path.display());
                 exit(1);
             }
         }
@@ -413,13 +438,19 @@ fn run(config: Config) -> Result<(), Box<dyn Error>> {
     spawn_ipc_server(config.ipc_socket.clone(), ipc_shared, ipc_cmd_tx);
     {
         let (renderer, _fb) = backend.bind()?;
-        if let Some(bg_path) = config.background.clone() {
-            match load_background(renderer, &bg_path) {
+        let mut bg_paths: Vec<PathBuf> = Vec::new();
+        for spec in collect_background_specs(&config) {
+            if !bg_paths.iter().any(|p| p == &spec.path) {
+                bg_paths.push(spec.path.clone());
+            }
+        }
+        for path in bg_paths {
+            match load_background(renderer, &path) {
                 Ok((buf, dims)) => {
-                    state.background_buffer = Some((buf, dims));
-                    tracing::info!("Background loaded from {}", bg_path.display());
+                    state.background_buffers.insert(path.clone(), (buf, dims));
+                    tracing::info!("Background loaded from {}", path.display());
                 },
-                Err(e) => tracing::warn!("Failed to load background {}: {e}", bg_path.display()),
+                Err(e) => tracing::warn!("Failed to load background {}: {e}", path.display()),
             }
         }
         match renderer.compile_custom_pixel_shader(

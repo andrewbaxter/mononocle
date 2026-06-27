@@ -3,7 +3,10 @@ use {
         Deserialize,
         Serialize,
     },
-    std::path::PathBuf,
+    std::{
+        collections::HashMap,
+        path::PathBuf,
+    },
 };
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -16,28 +19,48 @@ pub enum BackgroundSize {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct Config {
-    pub background: Option<PathBuf>,
+pub struct BackgroundSpec {
+    pub path: PathBuf,
     #[serde(default = "default_background_align")]
-    pub background_align: [f64; 2],
+    pub align: [f64; 2],
     #[serde(default)]
-    pub background_size: BackgroundSize,
-    #[serde(default = "default_border_color")]
-    pub border_color: [f32; 4],
+    pub size: BackgroundSize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
+pub struct WindowStyle {
     #[serde(default)]
-    pub border_thickness: i32,
+    pub background: Option<BackgroundSpec>,
     #[serde(default)]
-    pub corner_radius: f32,
+    pub border_color: Option<[f32; 4]>,
+    #[serde(default)]
+    pub border_thickness: Option<i32>,
+    #[serde(default)]
+    pub corner_radius: Option<f32>,
+    #[serde(default)]
+    pub fullscreen: Option<bool>,
+    #[serde(default)]
+    pub idle_hold: Option<IdleHoldPolicy>,
+    #[serde(default)]
+    pub inner_padding: Option<i32>,
+    #[serde(default)]
+    pub inner_padding_color: Option<[f32; 4]>,
+    #[serde(default)]
+    pub padding: Option<i32>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Config {
     #[serde(default)]
     pub cursor_hide_idle_secs: Option<f64>,
-    #[serde(default = "default_desktops")]
-    pub desktops: u32,
+    #[serde(default)]
+    pub default_style: WindowStyle,
+    #[serde(default)]
+    pub desktop_backgrounds: HashMap<u32, BackgroundSpec>,
     #[serde(default = "default_fullscreen_holds_idle")]
     pub fullscreen_prevents_idle: bool,
-    #[serde(default)]
-    pub inner_padding: i32,
-    #[serde(default = "default_inner_padding_color")]
-    pub inner_padding_color: [f32; 4],
     #[serde(default = "default_ipc_socket")]
     pub ipc_socket: PathBuf,
     #[serde(default = "default_lock_bg_color")]
@@ -50,8 +73,6 @@ pub struct Config {
     pub lock_timeout_secs: Option<f64>,
     #[serde(default)]
     pub outputs: Vec<OutputConfig>,
-    #[serde(default = "default_padding")]
-    pub padding: i32,
     #[serde(default)]
     pub screen_blank_idle_secs: Option<f64>,
     #[serde(default)]
@@ -87,19 +108,11 @@ impl Config {
 impl Default for Config {
     fn default() -> Self {
         Self {
-            background: None,
-            background_align: default_background_align(),
-            background_size: BackgroundSize::Cover,
-            padding: default_padding(),
-            corner_radius: 0.0,
-            inner_padding: 0,
-            inner_padding_color: default_inner_padding_color(),
-            border_thickness: 0,
-            border_color: default_border_color(),
+            default_style: WindowStyle::default(),
+            desktop_backgrounds: HashMap::new(),
             window_rules: Vec::new(),
             wayland_socket: default_wayland_socket(),
             ipc_socket: default_ipc_socket(),
-            desktops: default_desktops(),
             outputs: Vec::new(),
             screen_blank_idle_secs: None,
             screen_off_idle_secs: None,
@@ -115,23 +128,19 @@ impl Default for Config {
     }
 }
 
-fn default_background_align() -> [f64; 2] {
+pub fn default_background_align() -> [f64; 2] {
     [0.5, 0.5]
 }
 
-fn default_border_color() -> [f32; 4] {
+pub fn default_border_color() -> [f32; 4] {
     [1.0, 1.0, 1.0, 1.0]
-}
-
-fn default_desktops() -> u32 {
-    4
 }
 
 fn default_fullscreen_holds_idle() -> bool {
     true
 }
 
-fn default_inner_padding_color() -> [f32; 4] {
+pub fn default_inner_padding_color() -> [f32; 4] {
     [0.0, 0.0, 0.0, 1.0]
 }
 
@@ -159,12 +168,12 @@ fn default_output_position() -> OutputPosition {
     OutputPosition::None
 }
 
-fn default_padding() -> i32 {
+pub fn default_padding() -> i32 {
     20
 }
 
 fn default_unlock_socket() -> PathBuf {
-    PathBuf::from("/tmp/mononocle-unlock.sock")
+    PathBuf::from("/run/mononocle-unlock.sock")
 }
 
 fn default_wayland_socket() -> String {
@@ -225,14 +234,8 @@ pub enum RuleCriteria {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct WindowRule {
-    pub border_color: Option<[f32; 4]>,
-    pub border_thickness: Option<i32>,
-    pub corner_radius: Option<f32>,
     #[serde(rename = "match")]
     pub criteria: RuleCriteria,
-    pub fullscreen: Option<bool>,
-    pub idle_hold: Option<IdleHoldPolicy>,
-    pub inner_padding: Option<i32>,
-    pub inner_padding_color: Option<[f32; 4]>,
-    pub padding: Option<i32>,
+    #[serde(default)]
+    pub style: WindowStyle,
 }
