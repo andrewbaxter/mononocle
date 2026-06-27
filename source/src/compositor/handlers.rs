@@ -449,9 +449,9 @@ impl XdgShellHandler for State {
             self.current_window_id.is_none() ||
                 !self.windows.iter().any(|w| w.desktop == desktop && w.window.alive());
         let managed = ManagedWindow {
-            id,
-            window,
-            desktop,
+            id: id,
+            window: window,
+            desktop: desktop,
             fullscreen: is_fullscreen,
         };
         let info = managed.to_info(if is_first_visible {

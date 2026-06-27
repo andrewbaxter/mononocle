@@ -207,37 +207,39 @@ fn run(config: Config) -> Result<(), Box<dyn Error>> {
                                     !state.lock_password.is_empty() {
                                     state.lock_last_keystroke = Instant::now();
                                     state.lock_input_state = LockInputState::Verifying;
-                                    let password = state.lock_password.clone();
-                                    let socket_path = state.config.unlock_socket.clone();
                                     let (tx, rx) = channel();
                                     state.lock_verify_rx = Some(rx);
-                                    spawn(move || {
-                                        let rt = RuntimeBuilder::new_current_thread().enable_all().build();
-                                        let _ = tx.send(match rt {
-                                            Ok(rt) => rt.block_on(async {
-                                                let mut client =
-                                                    match unlock_protocol::Client::new(&socket_path).await {
-                                                        Ok(c) => c,
+                                    spawn({
+                                        let password = state.lock_password.clone();
+                                        let socket_path = state.config.unlock_socket.clone();
+                                        move || {
+                                            let rt = RuntimeBuilder::new_current_thread().enable_all().build();
+                                            let _ = tx.send(match rt {
+                                                Ok(rt) => rt.block_on(async {
+                                                    let mut client =
+                                                        match unlock_protocol::Client::new(&socket_path).await {
+                                                            Ok(c) => c,
+                                                            Err(e) => {
+                                                                tracing::error!(
+                                                                    "Failed to connect to unlock daemon: {e}"
+                                                                );
+                                                                return false;
+                                                            },
+                                                        };
+                                                    match client.send_req(CheckPassword { password }).await {
+                                                        Ok(result) => result,
                                                         Err(e) => {
-                                                            tracing::error!(
-                                                                "Failed to connect to unlock daemon: {e}"
-                                                            );
-                                                            return false;
+                                                            tracing::error!("Unlock IPC error: {e}");
+                                                            false
                                                         },
-                                                    };
-                                                match client.send_req(CheckPassword { password }).await {
-                                                    Ok(result) => result,
-                                                    Err(e) => {
-                                                        tracing::error!("Unlock IPC error: {e}");
-                                                        false
-                                                    },
-                                                }
-                                            }),
-                                            Err(e) => {
-                                                tracing::error!("Failed to create tokio runtime for unlock: {e}");
-                                                false
-                                            },
-                                        });
+                                                    }
+                                                }),
+                                                Err(e) => {
+                                                    tracing::error!("Failed to create tokio runtime for unlock: {e}");
+                                                    false
+                                                },
+                                            });
+                                        }
                                     });
                                 }
                             },

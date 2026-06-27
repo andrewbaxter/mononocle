@@ -156,9 +156,11 @@ async fn run_server(socket_path: PathBuf, enc_pw: String) {
                 continue;
             },
         };
-        let enc_pw = enc_pw.clone();
-        spawn(async move {
-            handle_connection(conn, enc_pw).await;
+        spawn({
+            let enc_pw = enc_pw.clone();
+            async move {
+                handle_connection(conn, enc_pw).await;
+            }
         });
     }
 }

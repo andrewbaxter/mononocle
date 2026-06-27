@@ -36,7 +36,7 @@ pub struct Config {
     pub default_style: WindowStyle,
     #[serde(default)]
     pub desktop_backgrounds: HashMap<u32, BackgroundSpec>,
-    #[serde(default = "default_fullscreen_holds_idle")]
+    #[serde(default = "default_fullscreen_prevents_idle")]
     pub fullscreen_prevents_idle: bool,
     #[serde(default = "default_ipc_socket")]
     pub ipc_socket: PathBuf,
@@ -95,7 +95,7 @@ impl Default for Config {
             screen_off_idle_secs: None,
             unidle_mouse_threshold: default_mouse_jitter_threshold(),
             cursor_hide_idle_secs: None,
-            fullscreen_prevents_idle: default_fullscreen_holds_idle(),
+            fullscreen_prevents_idle: default_fullscreen_prevents_idle(),
             lock_timeout_secs: None,
             lock_bg_color: default_lock_bg_color(),
             lock_fg_color: default_lock_fg_color(),
@@ -113,7 +113,7 @@ pub fn default_border_color() -> [f32; 4] {
     [1.0, 1.0, 1.0, 1.0]
 }
 
-fn default_fullscreen_holds_idle() -> bool {
+fn default_fullscreen_prevents_idle() -> bool {
     true
 }
 
@@ -159,11 +159,11 @@ fn default_wayland_socket() -> String {
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
-pub enum IdleHoldPolicy {
-    BlockHold,
+pub enum IdlePreventPolicy {
+    BlockPrevent,
     #[default]
     Default,
-    ForceHold,
+    ForcePrevent,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -231,7 +231,7 @@ pub struct WindowStyle {
     #[serde(default)]
     pub fullscreen: Option<bool>,
     #[serde(default)]
-    pub idle_hold: Option<IdleHoldPolicy>,
+    pub idle_prevent: Option<IdlePreventPolicy>,
     #[serde(default)]
     pub inner_padding: Option<i32>,
     #[serde(default)]

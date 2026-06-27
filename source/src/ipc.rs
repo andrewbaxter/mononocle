@@ -63,7 +63,7 @@ pub struct ToggleFullscreenArgs {
 pub struct Watch;
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
-#[serde(rename_all = "snake_case", tag = "type", deny_unknown_fields)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub enum WindowEvent {
     LockInhibitedChanged {
         lock_inhibited: bool,

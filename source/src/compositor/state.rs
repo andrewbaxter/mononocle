@@ -5,7 +5,7 @@ use {
                 BackgroundSize,
                 BackgroundSpec,
                 Config,
-                IdleHoldPolicy,
+                IdlePreventPolicy,
                 OutputCriteria,
                 OutputPosition,
                 RuleCriteria,
@@ -284,7 +284,7 @@ pub struct EffectiveWindowParams {
     pub border_thickness: i32,
     pub corner_radius: f32,
     pub fullscreen: bool,
-    pub idle_hold: IdleHoldPolicy,
+    pub idle_prevent: IdlePreventPolicy,
     pub inner_padding: i32,
     pub inner_padding_color: [f32; 4],
     pub padding: i32,
@@ -505,15 +505,15 @@ impl State {
         let first_desktop = desktops.first().copied().unwrap_or(0);
         let idx = self.output_states.len();
         self.output_states.push(OutputState {
-            id,
-            desktops,
+            id: id,
+            desktops: desktops,
             current_desktop: first_desktop,
             current_window_id: self
                 .windows
                 .iter()
                 .find(|w| w.desktop == first_desktop && w.window.alive())
                 .map(|w| w.id),
-            position,
+            position: position,
         });
         tracing::info!("Output matched config: connector={connector}, assigned output index {idx}");
         Some(idx)
@@ -570,7 +570,7 @@ impl State {
             }
             return;
         }
-        if self.is_idle_held() {
+        if self.is_idle_prevented() {
             return;
         }
         let elapsed = self.last_activity.elapsed();
@@ -672,8 +672,8 @@ impl State {
             if let Some(v) = style.fullscreen {
                 params.fullscreen = v;
             }
-            if let Some(ref v) = style.idle_hold {
-                params.idle_hold = v.clone();
+            if let Some(ref v) = style.idle_prevent {
+                params.idle_prevent = v.clone();
             }
         }
 
@@ -685,7 +685,7 @@ impl State {
             border_thickness: 0,
             border_color: default_border_color(),
             fullscreen: false,
-            idle_hold: IdleHoldPolicy::Default,
+            idle_prevent: IdlePreventPolicy::Default,
         };
         apply_style(&mut params, &self.config.default_style);
         for cr in &self.compiled_rules {
@@ -727,7 +727,7 @@ impl State {
         self.output_states.get(self.current_output).and_then(|os| os.current_window_id)
     }
 
-    pub fn is_idle_held(&self) -> bool {
+    pub fn is_idle_prevented(&self) -> bool {
         let Some(id) = self.current_window_id else {
             return false
         };
@@ -735,10 +735,10 @@ impl State {
             return false
         };
         let params = self.effective_window_params_for(mw);
-        match params.idle_hold {
-            IdleHoldPolicy::ForceHold => return true,
-            IdleHoldPolicy::BlockHold => return false,
-            IdleHoldPolicy::Default => { },
+        match params.idle_prevent {
+            IdlePreventPolicy::ForcePrevent => return true,
+            IdlePreventPolicy::BlockPrevent => return false,
+            IdlePreventPolicy::Default => { },
         }
         if self.config.fullscreen_prevents_idle && params.fullscreen {
             return true;
@@ -841,7 +841,7 @@ impl State {
             config.window_rules.iter().map(|rule| {
                 let criteria = compile_criteria(&rule.criteria);
                 CompiledRule {
-                    criteria,
+                    criteria: criteria,
                     style: rule.style.clone(),
                 }
             }).collect::<Vec<_>>()
@@ -888,7 +888,7 @@ impl State {
                 let criteria = compile_output_criteria(&cfg.criteria);
                 CompiledOutputConfig {
                     id: cfg.id.clone(),
-                    criteria,
+                    criteria: criteria,
                     desktops: cfg.desktops.clone(),
                     position: cfg.position.clone(),
                 }
@@ -896,18 +896,18 @@ impl State {
         };
         let now = Instant::now();
         Self {
-            compositor_state,
-            xdg_shell_state,
-            layer_shell_state,
-            shm_state,
-            output_manager_state,
-            seat_state,
-            data_device_state,
-            idle_inhibit_state,
-            seat,
+            compositor_state: compositor_state,
+            xdg_shell_state: xdg_shell_state,
+            layer_shell_state: layer_shell_state,
+            shm_state: shm_state,
+            output_manager_state: output_manager_state,
+            seat_state: seat_state,
+            data_device_state: data_device_state,
+            idle_inhibit_state: idle_inhibit_state,
+            seat: seat,
             popup_manager: PopupManager::default(),
-            output,
-            output_size,
+            output: output,
+            output_size: output_size,
             windows: Vec::new(),
             current_window_id: None,
             current_desktop: 0,
@@ -916,8 +916,8 @@ impl State {
             background_buffers: HashMap::new(),
             rounded_rect_shader: None,
             lock_shader: None,
-            ipc_shared,
-            ipc_rx,
+            ipc_shared: ipc_shared,
+            ipc_rx: ipc_rx,
             last_activity: now,
             last_mouse_activity: now,
             activity_mouse_pos: Point::from((0.0, 0.0)),
@@ -940,9 +940,9 @@ impl State {
             }],
             current_output: 0,
             warp_mouse_needed: false,
-            compiled_output_configs,
-            config,
-            compiled_rules,
+            compiled_output_configs: compiled_output_configs,
+            config: config,
+            compiled_rules: compiled_rules,
             display_handle: dh,
             start_time: now,
         }
@@ -1543,7 +1543,7 @@ impl State {
                 .filter(|w| w.window.alive())
                 .map(|w| w.to_info(self.current_window_id))
                 .collect();
-        let lock_inhibited = self.is_idle_held();
+        let lock_inhibited = self.is_idle_prevented();
         let mut shared = self.ipc_shared.lock().unwrap();
         shared.windows = windows;
         shared.current_window_id = self.current_window_id;

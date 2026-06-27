@@ -64,8 +64,8 @@ async fn handle_connection(
             },
             protocol::ServerReq::ShowDesktop(respond, ShowDesktopArgs { desktop, output }) => {
                 cmd_tx.send(IpcCommand::ShowDesktop {
-                    desktop,
-                    output,
+                    desktop: desktop,
+                    output: output,
                 }).ok();
                 respond(())
             },
@@ -84,7 +84,7 @@ async fn handle_connection(
             protocol::ServerReq::SetDesktop(respond, args) => {
                 if let Some(pid) = peer_pid {
                     cmd_tx.send(IpcCommand::SetDesktop {
-                        pid,
+                        pid: pid,
                         desktop: args.desktop,
                     }).ok();
                 }
@@ -160,10 +160,12 @@ async fn run_server(socket_path: PathBuf, shared: Arc<Mutex<SharedIpcState>>, cm
             },
         };
         let peer_pid = conn.0.peer_cred().ok().map(|c| c.pid().unwrap_or(0) as u32);
-        let shared = shared.clone();
-        let cmd_tx = cmd_tx.clone();
-        spawn(async move {
-            handle_connection(conn, shared, cmd_tx, peer_pid).await;
+        spawn({
+            let shared = shared.clone();
+            let cmd_tx = cmd_tx.clone();
+            async move {
+                handle_connection(conn, shared, cmd_tx, peer_pid).await;
+            }
         });
     }
 }
@@ -184,7 +186,7 @@ impl SharedIpcState {
             current_window_id: None,
             current_desktop: 0,
             lock_inhibited: false,
-            event_tx,
+            event_tx: event_tx,
         }
     }
 }

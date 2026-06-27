@@ -87,9 +87,11 @@ async fn run_server(socket_path: PathBuf, expected_password: String) {
                 continue;
             },
         };
-        let expected = expected_password.clone();
-        spawn(async move {
-            handle_connection(conn, expected).await;
+        spawn({
+            let expected = expected_password.clone();
+            async move {
+                handle_connection(conn, expected).await;
+            }
         });
     }
 }
