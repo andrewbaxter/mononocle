@@ -169,15 +169,15 @@ void main() {
     vec2 icon_size = size - 2.0 * u_pad;
     vec2 pixel = v_coords * size - u_pad;
 
-    vec2 body_center = vec2(icon_size.x * 0.5, icon_size.y * 0.6858);
-    vec2 body_half = vec2(icon_size.x * 0.4938, icon_size.y * 0.3096);
+    vec2 body_center = icon_size * vec2(0.5, 0.6858);
+    vec2 body_half = icon_size * vec2(0.4938, 0.28);
     float body_r = min(icon_size.y * 0.1499, min(body_half.x, body_half.y));
     float body_d = roundedBoxSDF(pixel - body_center, body_half, body_r);
 
-    vec2 shackle_center = icon_size * vec2(0.5, 0.3093);
-    vec2 shackle_half = icon_size * vec2(0.2, 0.2573);
+    vec2 shackle_center = icon_size * vec2(0.5, 0.34);
+    vec2 shackle_half = icon_size * vec2(0.22, 0.20);
     float shackle_r = min(icon_size.y * 0.1751, min(shackle_half.x, shackle_half.y));
-    float shackle_stroke_half = icon_size.y * 0.06;
+    float shackle_stroke_half = icon_size.y * 0.08;
     float shackle_d = abs(roundedBoxSDF(pixel - shackle_center, shackle_half, shackle_r)) - shackle_stroke_half;
 
     float union_d = min(body_d, shackle_d);
