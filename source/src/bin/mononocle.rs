@@ -137,17 +137,10 @@ fn run(config: Config) -> Result<(), Box<dyn std::error::Error>> {
     state.seat.add_pointer();
 
     // Create Wayland socket
-    let listener = ListeningSocket::bind_auto("mononocle", 1 ..= 9)?;
-    let socket_name = listener.socket_name().unwrap().to_string_lossy().to_string();
-
-    // SAFETY: single-threaded at this point, no concurrent env reads
-    unsafe {
-        std::env::set_var("WAYLAND_DISPLAY", &socket_name);
-    }
-    tracing::info!("WAYLAND_DISPLAY={}", socket_name);
+    let listener = ListeningSocket::bind(config.wayland_socket.as_str())?;
 
     // Start IPC server thread
-    spawn_ipc_server(config.socket.clone(), ipc_shared, ipc_cmd_tx);
+    spawn_ipc_server(config.ipc_socket.clone(), ipc_shared, ipc_cmd_tx);
 
     // Bind renderer once to load background and compile shader
     {

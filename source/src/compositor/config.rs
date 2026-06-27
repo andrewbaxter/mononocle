@@ -153,9 +153,12 @@ pub struct Config {
     /// Window rules applied in order; the first matching rule is applied.
     #[serde(default)]
     pub window_rules: Vec<WindowRule>,
+    /// Wayland display socket name (e.g. "wayland-1"). Exposed via WAYLAND_DISPLAY.
+    #[serde(default = "default_wayland_socket")]
+    pub wayland_socket: String,
     /// Path for the IPC Unix socket.
-    #[serde(default = "default_socket")]
-    pub socket: PathBuf,
+    #[serde(default = "default_ipc_socket")]
+    pub ipc_socket: PathBuf,
     /// Number of virtual desktops.
     #[serde(default = "default_desktops")]
     pub desktops: u32,
@@ -215,8 +218,12 @@ fn default_border_color() -> [f32; 4] {
     [1.0, 1.0, 1.0, 1.0]
 }
 
-fn default_socket() -> PathBuf {
+fn default_ipc_socket() -> PathBuf {
     PathBuf::from("/tmp/mononocle.sock")
+}
+
+fn default_wayland_socket() -> String {
+    "wayland-1".to_string()
 }
 
 fn default_desktops() -> u32 {
@@ -260,7 +267,8 @@ impl Default for Config {
             border_thickness: 0,
             border_color: default_border_color(),
             window_rules: Vec::new(),
-            socket: default_socket(),
+            wayland_socket: default_wayland_socket(),
+            ipc_socket: default_ipc_socket(),
             desktops: default_desktops(),
             outputs: Vec::new(),
             screen_blank_timeout_secs: None,
